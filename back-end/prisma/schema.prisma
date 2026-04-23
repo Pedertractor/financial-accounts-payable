@@ -1,0 +1,412 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SourceType {
+  BANK
+  INTERNAL
+}
+
+enum UploadStatus {
+  RECEIVED
+  VALIDATING
+  PARSING
+  IMPORTING
+  COMPLETED
+  PARTIAL_SUCCESS
+  FAILED
+}
+
+enum RunStatus {
+  OPEN
+  IN_REVIEW
+  CLOSED
+}
+
+enum TriageBucket {
+  PAY
+  VERIFY
+  BANK_ONLY
+  INTERNAL_ONLY
+}
+
+enum SuggestionStatus {
+  OPEN
+  APPROVED
+  REJECTED
+  IGNORED
+}
+
+enum SuggestionReason {
+  EXACT_NAME_VALUE
+  FUZZY_NAME_MATCH
+  VALUE_ONLY
+  MULTIPLE_CANDIDATES
+  AGGREGATED_CANDIDATE
+  NO_INTERNAL_MATCH
+  NO_BANK_MATCH
+  MANUAL_REVIEW_REQUIRED
+}
+
+enum ReconciliationType {
+  EXACT
+  MANUAL
+  AGGREGATED
+  VALUE_ONLY_CONFIRMED
+}
+
+enum PaymentStatus {
+  NOT_PAID
+  PAID
+  PARTIALLY_PAID
+  CANCELLED
+}
+
+enum UnitType {
+  PEDERTRACTOR
+  TRACTOR
+}
+
+enum UserRole {
+  FINANCIAL
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  employeeId   String   @unique
+  name         String
+  unit         UnitType
+  cardNumber   String
+  passwordHash String
+  role         UserRole
+  active       Boolean  @default(true)
+  firstLogin   Boolean  @default(true)
+
+  createdRuns     ReconciliationRun[]   @relation("RunCreatedBy")
+  uploadedFiles   FileUpload[]
+  suggestions     MatchSuggestion[]     @relation("SuggestionReviewedBy")
+  reconciliations ReconciliationGroup[] @relation("ReconciliationReviewedBy")
+  payments        PaymentMark[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cardNumber, unit])
+}
+
+model ReconciliationRun {
+  id                 String    @id @default(cuid())
+  title              String?
+  referenceStartDate DateTime?
+  referenceEndDate   DateTime?
+  status             RunStatus @default(OPEN)
+  notes              String?
+
+  createdById String?
+  createdBy   User?   @relation("RunCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  uploads         FileUpload[]
+  bankRecords     BankRecord[]
+  internalRecords InternalRecord[]
+  suggestions     MatchSuggestion[]
+  reconciliations ReconciliationGroup[]
+  paymentMarks    PaymentMark[]
+
+  @@index([referenceStartDate, referenceEndDate])
+  @@index([status])
+}
+
+model FileUpload {
+  id           String  @id @default(cuid())
+  runId        String?
+  uploadedById String?
+
+  sourceType SourceType
+  status     UploadStatus @default(RECEIVED)
+
+  originalFileName String
+  storedFileName   String?
+  storagePath      String?
+  mimeType         String?
+  fileExtension    String?
+  fileSizeBytes    Int?
+
+  fileHash           String?
+  workbookSheetCount Int?
+  selectedSheetName  String?
+
+  startedAt         DateTime?
+  parsingStartedAt  DateTime?
+  parsingFinishedAt DateTime?
+  importedAt        DateTime?
+  finishedAt        DateTime?
+
+  parseDurationMs  Int?
+  importDurationMs Int?
+  totalDurationMs  Int?
+
+  totalRowsDetected     Int?
+  totalRowsRead         Int?
+  totalRowsImported     Int?
+  totalRowsRejected     Int?
+  totalRowsWithWarnings Int?
+
+  headerRowIndex      Int?
+  detectedColumnsJson Json?
+  mappingColumnsJson  Json?
+
+  parserVersion String?
+  importVersion String?
+
+  errorMessage       String?
+  errorDetailsJson   Json?
+  warningDetailsJson Json?
+
+  run        ReconciliationRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  uploadedBy User?              @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  bankRecords     BankRecord[]
+  internalRecords InternalRecord[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId])
+  @@index([uploadedById])
+  @@index([sourceType, status])
+  @@index([fileHash])
+  @@index([createdAt])
+}
+
+model BankRecord {
+  id           String  @id @default(cuid())
+  runId        String
+  fileUploadId String?
+
+  rowNumber            Int?
+  dueDate              DateTime?
+  beneficiaryNameRaw   String
+  beneficiaryNameNorm  String?
+  beneficiaryNameCanon String?
+  payerNameRaw         String?
+  nossoNumero          String?
+  amount               Decimal   @db.Decimal(14, 2)
+
+  run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  fileUpload FileUpload?       @relation(fields: [fileUploadId], references: [id], onDelete: SetNull)
+
+  suggestionLinks     SuggestionBankLink[]
+  reconciliationLinks ReconciliationBankLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId, dueDate])
+  @@index([amount])
+  @@index([beneficiaryNameNorm])
+  @@index([beneficiaryNameCanon])
+  @@index([nossoNumero])
+}
+
+model InternalRecord {
+  id           String  @id @default(cuid())
+  runId        String
+  fileUploadId String?
+
+  rowNumber         Int?
+  dueDate           DateTime?
+  issueDate         DateTime?
+  supplierCode      Int?
+  supplierNameRaw   String
+  supplierNameNorm  String?
+  supplierNameCanon String?
+  walletCode        String?
+  branchCode        String?
+  invoiceNumber     String?
+  installment       String?
+  amount            Decimal   @db.Decimal(14, 2)
+  amountPaid        Decimal?  @db.Decimal(14, 2)
+  dda               String?
+  notes             String?
+
+  run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  fileUpload FileUpload?       @relation(fields: [fileUploadId], references: [id], onDelete: SetNull)
+
+  suggestionLinks     SuggestionInternalLink[]
+  reconciliationLinks ReconciliationInternalLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId, dueDate])
+  @@index([amount])
+  @@index([supplierNameNorm])
+  @@index([supplierNameCanon])
+  @@index([supplierCode])
+  @@index([walletCode])
+  @@index([invoiceNumber])
+}
+
+model MatchSuggestion {
+  id    String @id @default(cuid())
+  runId String
+
+  triageBucket TriageBucket
+  status       SuggestionStatus @default(OPEN)
+  reason       SuggestionReason
+
+  scorePercent     Int
+  amountScore      Int @default(0)
+  nameScore        Int @default(0)
+  dateScore        Int @default(0)
+  ambiguityPenalty Int @default(0)
+
+  amountDifference Decimal? @db.Decimal(14, 2)
+  confidenceLabel  String?
+  explanation      String?
+
+  reviewedById String?
+  reviewedBy   User?   @relation("SuggestionReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  run ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  bankLinks     SuggestionBankLink[]
+  internalLinks SuggestionInternalLink[]
+
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  reconciliationGroups ReconciliationGroup[]
+
+  @@index([runId, triageBucket])
+  @@index([status])
+  @@index([scorePercent])
+  @@index([reason])
+}
+
+model SuggestionBankLink {
+  id           String @id @default(cuid())
+  suggestionId String
+  bankRecordId String
+
+  suggestion MatchSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+  bankRecord BankRecord      @relation(fields: [bankRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([suggestionId, bankRecordId])
+  @@index([bankRecordId])
+}
+
+model SuggestionInternalLink {
+  id               String @id @default(cuid())
+  suggestionId     String
+  internalRecordId String
+
+  suggestion     MatchSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+  internalRecord InternalRecord  @relation(fields: [internalRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([suggestionId, internalRecordId])
+  @@index([internalRecordId])
+}
+
+model ReconciliationGroup {
+  id                 String  @id @default(cuid())
+  runId              String
+  sourceSuggestionId String?
+
+  reconciliationType ReconciliationType
+  confirmedByUserId  String?
+  confirmedByUser    User?              @relation("ReconciliationReviewedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+
+  finalScorePercent Int?
+  notes             String?
+
+  run              ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  sourceSuggestion MatchSuggestion?  @relation(fields: [sourceSuggestionId], references: [id], onDelete: SetNull)
+
+  bankLinks     ReconciliationBankLink[]
+  internalLinks ReconciliationInternalLink[]
+  paymentMarks  PaymentMark[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId])
+  @@index([reconciliationType])
+}
+
+model ReconciliationBankLink {
+  id               String @id @default(cuid())
+  reconciliationId String
+  bankRecordId     String
+
+  reconciliation ReconciliationGroup @relation(fields: [reconciliationId], references: [id], onDelete: Cascade)
+  bankRecord     BankRecord          @relation(fields: [bankRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([reconciliationId, bankRecordId])
+  @@index([bankRecordId])
+}
+
+model ReconciliationInternalLink {
+  id               String @id @default(cuid())
+  reconciliationId String
+  internalRecordId String
+
+  reconciliation ReconciliationGroup @relation(fields: [reconciliationId], references: [id], onDelete: Cascade)
+  internalRecord InternalRecord      @relation(fields: [internalRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([reconciliationId, internalRecordId])
+  @@index([internalRecordId])
+}
+
+model PaymentMark {
+  id               String  @id @default(cuid())
+  runId            String
+  reconciliationId String?
+
+  status           PaymentStatus @default(NOT_PAID)
+  paidAmount       Decimal?      @db.Decimal(14, 2)
+  paidAt           DateTime?
+  paymentReference String?
+  receiptUrl       String?
+  notes            String?
+
+  markedById String?
+  markedBy   User?   @relation(fields: [markedById], references: [id], onDelete: SetNull)
+
+  run            ReconciliationRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  reconciliation ReconciliationGroup? @relation(fields: [reconciliationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([runId, status])
+  @@index([paidAt])
+}
+
+model CounterpartyAlias {
+  id             String      @id @default(cuid())
+  sourceType     SourceType?
+  rawName        String
+  normalizedName String?
+  canonicalName  String
+  active         Boolean     @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([normalizedName])
+  @@index([canonicalName])
+}

@@ -1,0 +1,37 @@
+services:
+  # api-financial-accounts-payable:
+  #   build: .
+  #   container_name: api-financial-accounts-payable
+  #   restart: always
+  #   ports:
+  #     - 3133:3133
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - postgresql-financial-accounts-payable
+  #   networks:
+  #     - financial-accounts-payable-network
+  # Fotos de recibo (save-image-utils → uploads/). Persiste entre recriações do container.
+  # volumes:
+  #   - api_revit_uploads:/usr/src/app/uploads
+
+  postgresql-financial-accounts-payable:
+    image: postgres:16
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=docker
+      - POSTGRES_PASSWORD=docker
+      - POSTGRES_DB=financial-accounts-payable
+
+    networks:
+      - financial-accounts-payable-network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  #vamos discutir a possibilidade de ter que usar volume no back-end
+  # api_revit_uploads:
+networks:
+  financial-accounts-payable-network:
