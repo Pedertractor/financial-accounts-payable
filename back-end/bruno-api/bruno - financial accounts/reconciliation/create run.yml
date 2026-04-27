@@ -1,0 +1,45 @@
+info:
+  name: create run
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs"
+  body:
+    type: json
+    data: |-
+      {
+        "title": "Bruno - importação teste",
+        "unit": "PEDERTRACTOR"
+      }
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body && res.body.run && res.body.run.id) {
+          bru.setVar("RUN_ID", res.body.run.id);
+        }
+    - type: tests
+      code: |-
+        test("deve retornar 201", function () {
+          expect(res.status).to.equal(201);
+        });
+        test("deve conter run com id", function () {
+          expect(res.body).to.have.property("run");
+          expect(res.body.run).to.have.property("id");
+        });
+
+docs: |-
+  Cria uma execução de conciliação. Guarde o `run.id` em `RUN_ID` (o script preenche variável de runtime).
+  Campos opcionais: `referenceStartDate`, `referenceEndDate` (ISO 8601).
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

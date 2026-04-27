@@ -1,0 +1,17 @@
+info:
+  name: deactivate user
+  type: http
+  seq: 5
+
+http:
+  method: PATCH
+  url: "{{HOST}}/users/{{USER_ID}}/deactivate"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

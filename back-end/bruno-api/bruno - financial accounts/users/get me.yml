@@ -1,0 +1,31 @@
+info:
+  name: get me
+  type: http
+  seq: 8
+
+http:
+  method: GET
+  url: "{{HOST}}/users/me"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("deve conter user", function () {
+          expect(res.body).to.have.property("user");
+        });
+
+docs: |-
+  Retorna o usuário autenticado pelo JWT.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

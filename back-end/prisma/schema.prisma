@@ -24,7 +24,9 @@ enum UploadStatus {
   IMPORTING
   COMPLETED
   PARTIAL_SUCCESS
+  AWAITING_CONFIRM
   FAILED
+  CANCELLED
 }
 
 enum RunStatus {
@@ -40,11 +42,19 @@ enum TriageBucket {
   INTERNAL_ONLY
 }
 
+/// Estados persistidos em `MatchSuggestion.status` (fonte de verdade para triagem e pagamento).
+/// OPEN = pendente; APPROVED = conferido (liberado); REJECTED/IGNORED = fora do fluxo.
 enum SuggestionStatus {
   OPEN
   APPROVED
   REJECTED
   IGNORED
+}
+
+/// Vínculo manual "sem par banco" aprovado como PIX ou TED.
+enum PaymentVinculoKind {
+  PIX
+  TED
 }
 
 enum SuggestionReason {
@@ -55,6 +65,14 @@ enum SuggestionReason {
   AGGREGATED_CANDIDATE
   NO_INTERNAL_MATCH
   NO_BANK_MATCH
+  /// Interno sem banco, mas o fornecedor já foi cadastrado como pagamento PIX (aguarda confirmação).
+  PIX_CANDIDATE
+  /// Interno sem banco, fornecedor já cadastrado como TED (aguarda confirmação).
+  TED_CANDIDATE
+  /// Item aprovado como pagamento via PIX (vínculo manual ou confirmação de PIX_CANDIDATE).
+  PIX_VINCULO_OK
+  /// Item aprovado como TED (vínculo manual ou confirmação de TED_CANDIDATE).
+  TED_VINCULO_OK
   MANUAL_REVIEW_REQUIRED
 }
 
@@ -96,8 +114,10 @@ model User {
   createdRuns     ReconciliationRun[]   @relation("RunCreatedBy")
   uploadedFiles   FileUpload[]
   suggestions     MatchSuggestion[]     @relation("SuggestionReviewedBy")
+  suggestionsPaid MatchSuggestion[]     @relation("SuggestionPaidBy")
   reconciliations ReconciliationGroup[] @relation("ReconciliationReviewedBy")
   payments        PaymentMark[]
+  paymentVinculosCreated PaymentVinculoName[] @relation("PaymentVinculoCreatedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -107,6 +127,8 @@ model User {
 
 model ReconciliationRun {
   id                 String    @id @default(cuid())
+  /// Dados e sugestões desta execução pertencem a esta empresa.
+  unit               UnitType
   title              String?
   referenceStartDate DateTime?
   referenceEndDate   DateTime?
@@ -128,6 +150,8 @@ model ReconciliationRun {
 
   @@index([referenceStartDate, referenceEndDate])
   @@index([status])
+  @@index([unit])
+  @@index([createdById, unit])
 }
 
 model FileUpload {
@@ -266,8 +290,11 @@ model MatchSuggestion {
   runId String
 
   triageBucket TriageBucket
-  status       SuggestionStatus @default(OPEN)
-  reason       SuggestionReason
+  /// Estado da triagem / conferido para o financeiro (persistido; `APPROVED` = conferido).
+  status          SuggestionStatus @default(OPEN)
+  /// Momento em que a sugestão virou `APPROVED` (ex.: tecla A). Nulo se ainda pendente.
+  confirmedAt     DateTime?
+  reason            SuggestionReason
 
   scorePercent     Int
   amountScore      Int @default(0)
@@ -277,10 +304,17 @@ model MatchSuggestion {
 
   amountDifference Decimal? @db.Decimal(14, 2)
   confidenceLabel  String?
-  explanation      String?
+  explanation        String?
 
+  /// Usuário que conferiu (APPROVED) ou revisou.
   reviewedById String?
   reviewedBy   User?   @relation("SuggestionReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  /// Aprovado como "sem par banco" vinculado a PIX ou TED (exibe ícone na triagem).
+  paymentVinculoKind PaymentVinculoKind?
+  /// Financeiro marcou a conta como paga (independente de PIX/TED).
+  paidAt   DateTime?
+  paidById String?
+  paidBy   User?   @relation("SuggestionPaidBy", fields: [paidById], references: [id], onDelete: SetNull)
 
   run ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -292,9 +326,13 @@ model MatchSuggestion {
   reconciliationGroups ReconciliationGroup[]
 
   @@index([runId, triageBucket])
+  @@index([runId, status])
   @@index([status])
   @@index([scorePercent])
   @@index([reason])
+  @@index([runId, confirmedAt])
+  @@index([paidAt])
+  @@index([runId, paidAt])
 }
 
 model SuggestionBankLink {
@@ -409,4 +447,29 @@ model CounterpartyAlias {
 
   @@index([normalizedName])
   @@index([canonicalName])
+}
+
+/// Nome (normalizado) cadastrado como pago via PIX ou TED em “sem par banco”.
+model PaymentVinculoName {
+  id             String             @id @default(cuid())
+  kind           PaymentVinculoKind @default(PIX)
+  normalizedName String
+  displayName    String
+  /// Nome/razão social usado no comprovante (editável; default vindo do ERP).
+  registroNome   String?
+  /// Código identificador interno inserido pelo usuário.
+  userCode       String?
+  /// Chave PIX (e-mail, telefone, CPF, CNPJ, aleatória, etc.).
+  pixChave       String?
+  tedBanco       String?
+  tedAgencia     String?
+  tedConta       String?
+  tedCnpj        String?
+  createdById    String?
+  createdBy      User?              @relation("PaymentVinculoCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([normalizedName, kind])
+  @@map("PixVinculoName")
 }

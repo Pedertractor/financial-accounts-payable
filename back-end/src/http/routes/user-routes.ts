@@ -23,7 +23,7 @@ export async function userRoutes(app: FastifyInstance) {
   app.post('/first-password', completeFirstPasswordUser);
   app.get('/me', { preHandler: authMiddleware }, getMeUser);
   app.get('/', { preHandler: adminOrResponsiblePreHandler }, listUsers);
-  app.post('/', { preHandler: adminOrResponsiblePreHandler }, registerUser);
+  app.post('/', registerUser);
   app.put('/:id', { preHandler: adminOrResponsiblePreHandler }, updateUser);
   app.patch(
     '/:id/deactivate',

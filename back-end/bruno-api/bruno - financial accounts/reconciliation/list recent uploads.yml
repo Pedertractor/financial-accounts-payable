@@ -1,0 +1,32 @@
+info:
+  name: list recent uploads
+  type: http
+  seq: 4
+
+http:
+  method: GET
+  url: "{{HOST}}/reconciliation/uploads?limit=10"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("deve conter uploads", function () {
+          expect(res.body).to.have.property("uploads");
+        });
+
+docs: |-
+  Lista uploads cujo processamento **já terminou** (`finishedAt` preenchido), do mais recente ao mais antigo.
+  Útil para o painel “última importação” e histórico resumido.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

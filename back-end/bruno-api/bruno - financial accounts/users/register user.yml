@@ -1,0 +1,42 @@
+info:
+  name: register user
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: "{{HOST}}/users"
+  body:
+    type: json
+    data: |-
+      {
+        "cardNumber": "5487",
+        "unit": "PEDERTRACTOR",
+        "role": "ADMIN"
+      }
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 201 Created", function () {
+          expect(res.status).to.equal(201);
+        });
+        test("deve conter user com id", function () {
+          expect(res.body).to.have.property("user");
+          expect(res.body.user).to.have.property("id");
+        });
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+
+docs: |-
+  Cria usuário interno (sincroniza com API Pedertractor por cartão).
+  Requer token de **ADMIN** ou **FINANCIAL** (mesma regra dos demais endpoints de gestão de usuários).
+  Ajuste `cardNumber` / `unit` / `role` (FINANCIAL | ADMIN) conforme o ambiente.
