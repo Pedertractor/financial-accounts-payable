@@ -1,27 +1,37 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   Banknote,
+  Calendar as CalendarIcon,
   Database,
   Landmark,
+  Link2,
+  Loader2,
   QrCode,
   Zap,
-} from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+} from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from '@/components/ui/dialog';
+import { Calendar } from '@/components/ui/calendar';
+import { Label } from '@/components/ui/label';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import {
   Table,
   TableBody,
@@ -29,69 +39,74 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table'
-import { AccountPaidConfirmDialog } from '@/components/account-paid-confirm-dialog'
-import { PaymentInstructionModal } from '@/components/payment-instruction-modal'
-import { SuggestionDetailModal } from '@/components/suggestion-detail-modal'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+} from '@/components/ui/table';
+import { AccountPaidConfirmDialog } from '@/components/account-paid-confirm-dialog';
+import { PaymentInstructionModal } from '@/components/payment-instruction-modal';
+import { SuggestionDetailModal } from '@/components/suggestion-detail-modal';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   confirmSuggestionsBatch,
+  getApiBase,
   getLatestReconciliationRun,
   getReconciliationRun,
   listRunSuggestions,
   markSuggestionPaid,
+  requestInitWithTimeout,
   type SuggestionListItem,
-} from '@/lib/api'
+} from '@/lib/api';
 import {
   getStoredReconciliationRunId,
   setStoredReconciliationRunId,
   clearStoredReconciliationRunId,
-  getStoredVinculosCompareDate,
-  getStoredVinculosFilterByDay,
-  setStoredVinculosCompareDate,
-  setStoredVinculosFilterByDay,
+  getStoredVinculosDateRange,
+  setStoredVinculosDateRange,
+  type VinculosDateRangeYmd,
   getStoredConciliationUnitForVinculos,
   setStoredConciliationUnit,
   type ConciliationUnit,
-} from '@/lib/reconcile-storage'
-import { cn } from '@/lib/utils'
+} from '@/lib/reconcile-storage';
+import { cn } from '@/lib/utils';
 
 function formatBrlAmount(raw: string | null): string {
   if (raw == null || raw === '') {
-    return '—'
+    return '—';
   }
-  const n = Number.parseFloat(raw)
+  const n = Number.parseFloat(raw);
   if (Number.isNaN(n)) {
-    return raw
+    return raw;
   }
   return n.toLocaleString('pt-BR', {
     style: 'currency',
     currency: 'BRL',
-  })
+  });
 }
 
 function formatDatePt(iso: string | null | undefined): string {
-  if (!iso) return '—'
+  if (!iso) return '—';
   try {
     if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
       return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR', {
         day: '2-digit',
         month: 'short',
         year: 'numeric',
-      })
+      });
     }
     return new Date(iso).toLocaleDateString('pt-BR', {
       day: '2-digit',
       month: 'short',
       year: 'numeric',
-    })
+    });
   } catch {
-    return '—'
+    return '—';
   }
 }
 
 function formatDateTimePtBr(iso: string | null | undefined): string {
-  if (!iso) return '—'
+  if (!iso) return '—';
   try {
     return new Date(iso).toLocaleString('pt-BR', {
       day: '2-digit',
@@ -99,16 +114,29 @@ function formatDateTimePtBr(iso: string | null | undefined): string {
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-    })
+    });
   } catch {
-    return '—'
+    return '—';
   }
 }
 
-const REASON_META: Record<
-  string,
-  { label: string; className: string }
-> = {
+function ymdToLocalDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatYmdLongPt(ymd: string): string {
+  return format(ymdToLocalDate(ymd), 'PPP', { locale: ptBR });
+}
+
+function formatCompareRangeLabel(range: VinculosDateRangeYmd): string {
+  if (range.from === range.to) {
+    return formatYmdLongPt(range.from);
+  }
+  return `${formatYmdLongPt(range.from)} – ${formatYmdLongPt(range.to)}`;
+}
+
+const REASON_META: Record<string, { label: string; className: string }> = {
   EXACT_NAME_VALUE: {
     label: 'NOME E VALOR EXATOS',
     className: 'text-emerald-700 dark:text-emerald-400',
@@ -157,13 +185,13 @@ const REASON_META: Record<
     label: 'REVISÃO MANUAL',
     className: 'text-amber-700 dark:text-amber-400',
   },
-}
+};
 
 function ReasonCell({ reason }: { reason: string }) {
   const meta = REASON_META[reason] ?? {
     label: reason,
     className: 'text-muted-foreground',
-  }
+  };
   return (
     <span
       className={cn(
@@ -173,779 +201,940 @@ function ReasonCell({ reason }: { reason: string }) {
     >
       {meta.label}
     </span>
-  )
+  );
 }
 
 function getReasonCategory(r: SuggestionListItem): 'revisao' | 'padrao' {
   if (r.reasonCategory === 'revisao' || r.reasonCategory === 'padrao') {
-    return r.reasonCategory
+    return r.reasonCategory;
   }
-  return [
-    'FUZZY_NAME_MATCH',
-    'MANUAL_REVIEW_REQUIRED',
-    'VALUE_ONLY',
-  ].includes(r.reason)
+  return ['FUZZY_NAME_MATCH', 'MANUAL_REVIEW_REQUIRED', 'VALUE_ONLY'].includes(
+    r.reason,
+  )
     ? 'revisao'
-    : 'padrao'
+    : 'padrao';
 }
 
 function MotivoDiffCell({ row }: { row: SuggestionListItem }) {
-  const categoria = getReasonCategory(row)
-  const detalheEnum =
-    REASON_META[row.reason]?.label ?? row.reason
+  const categoria = getReasonCategory(row);
+  const detalheEnum = REASON_META[row.reason]?.label ?? row.reason;
+  const sumHint = row.sumAggregationAvailable === true;
   if (categoria === 'revisao') {
     return (
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span
-          className="text-amber-800 dark:text-amber-200 font-mono text-xs font-semibold tracking-tight"
-          title={detalheEnum}
-        >
-          Revisão
-        </span>
+      <div className='flex min-w-0 flex-col gap-0.5'>
+        <div className='flex min-w-0 items-center gap-1.5'>
+          {sumHint ? (
+            <span
+              className='inline-flex shrink-0'
+              title={
+                row.reason === 'NO_BANK_MATCH'
+                  ? 'Este título entra em uma soma de 2+ internos que fecha um extrato sem par'
+                  : 'Há 2+ títulos no ERP (sem par) cuja soma pode fechar este extrato'
+              }
+            >
+              <Link2
+                className='text-muted-foreground size-3.5'
+                aria-label={
+                  row.reason === 'NO_BANK_MATCH'
+                    ? 'Título que participa de soma com extrato sem par'
+                    : 'Extrato com possível soma de títulos no ERP'
+                }
+              />
+            </span>
+          ) : null}
+          <span
+            className='text-amber-800 dark:text-amber-200 font-mono text-xs font-semibold tracking-tight'
+            title={detalheEnum}
+          >
+            Revisão
+          </span>
+        </div>
         {row.amountDifference && row.amountDifference !== '0' && (
-          <span className="text-muted-foreground text-[0.7rem]">
+          <span className='text-muted-foreground text-[0.7rem]'>
             Δ {formatBrlAmount(row.amountDifference)}
           </span>
         )}
       </div>
-    )
+    );
   }
   return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <ReasonCell reason={row.reason} />
+    <div className='flex min-w-0 flex-col gap-0.5'>
+      <div className='flex min-w-0 items-center gap-1.5'>
+        {sumHint ? (
+          <span
+            className='inline-flex shrink-0'
+            title={
+              row.reason === 'NO_BANK_MATCH'
+                ? 'Este título entra em uma soma de 2+ internos que fecha um extrato sem par'
+                : 'Há 2+ títulos no ERP (sem par) cuja soma pode fechar este extrato'
+            }
+          >
+            <Link2
+              className='text-muted-foreground size-3.5'
+              aria-label={
+                row.reason === 'NO_BANK_MATCH'
+                  ? 'Título que participa de soma com extrato sem par'
+                  : 'Extrato com possível soma de títulos no ERP'
+              }
+            />
+          </span>
+        ) : null}
+        <ReasonCell reason={row.reason} />
+      </div>
       {row.amountDifference && row.amountDifference !== '0' && (
-        <span className="text-muted-foreground text-[0.7rem]">
+        <span className='text-muted-foreground text-[0.7rem]'>
           Δ {formatBrlAmount(row.amountDifference)}
         </span>
       )}
     </div>
-  )
+  );
 }
 
-type SortColumn = 'index' | 'amount'
-type SortDir = 'asc' | 'desc'
+type SortColumn = 'index' | 'amount';
+type SortDir = 'asc' | 'desc';
 
 function parseAmount(n: string | null | undefined): number {
   if (n == null || n === '') {
-    return Number.NaN
+    return Number.NaN;
   }
-  return Number.parseFloat(n)
+  return Number.parseFloat(n);
 }
 
 /** Ordenar por valor: prioriza banco, depois interno, depois legado `amount`. */
 function amountForSort(r: SuggestionListItem): number {
-  const bank = parseAmount(r.amountBank)
+  const bank = parseAmount(r.amountBank);
   if (!Number.isNaN(bank)) {
-    return bank
+    return bank;
   }
-  const inter = parseAmount(r.amountInternal)
+  const inter = parseAmount(r.amountInternal);
   if (!Number.isNaN(inter)) {
-    return inter
+    return inter;
   }
-  return parseAmount(r.amount)
+  return parseAmount(r.amount);
 }
 
 function bancoBarraInternoText(r: SuggestionListItem): string {
-  const b = formatBrlAmount(r.amountBank ?? null)
-  const i = formatBrlAmount(r.amountInternal ?? null)
+  const b = formatBrlAmount(r.amountBank ?? null);
+  const i = formatBrlAmount(r.amountInternal ?? null);
   if (b === '—' && i === '—') {
-    return formatBrlAmount(r.amount)
+    return formatBrlAmount(r.amount);
   }
-  return `${b} / ${i}`
+  return `${b} / ${i}`;
 }
 
 function getSuggestionStatus(r: SuggestionListItem): string {
   if (r.suggestionStatus) {
-    return r.suggestionStatus
+    return r.suggestionStatus;
   }
   if (r.status) {
-    return r.status
+    return r.status;
   }
-  return 'OPEN'
+  return 'OPEN';
 }
 
 function isPendente(r: SuggestionListItem): boolean {
-  return getSuggestionStatus(r) === 'OPEN'
+  return getSuggestionStatus(r) === 'OPEN';
 }
 
 function canShowConfirmA(r: SuggestionListItem): boolean {
   if (!isPendente(r)) {
-    return false
+    return false;
   }
   if (r.canConfirm === true) {
-    return true
+    return true;
   }
   if (r.canConfirm === false) {
-    return false
+    return false;
   }
   return (
     r.reason === 'EXACT_NAME_VALUE' ||
     r.reason === 'PIX_CANDIDATE' ||
     r.reason === 'TED_CANDIDATE' ||
     getReasonCategory(r) === 'revisao'
-  )
+  );
 }
 
 function getApprovedPaymentVinculoKind(
   r: SuggestionListItem,
 ): 'PIX' | 'TED' | null {
   if (r.paymentVinculoKind === 'PIX' || r.paymentVinculoKind === 'TED') {
-    return r.paymentVinculoKind
+    return r.paymentVinculoKind;
   }
   if (r.reason === 'PIX_VINCULO_OK') {
-    return 'PIX'
+    return 'PIX';
   }
   if (r.reason === 'TED_VINCULO_OK') {
-    return 'TED'
+    return 'TED';
   }
-  return null
+  return null;
 }
 
 function isSuggestionMarkedPaid(r: SuggestionListItem): boolean {
-  return r.paidAt != null && r.paidAt !== ''
+  return r.paidAt != null && r.paidAt !== '';
 }
 
 function StatusCell({ row }: { row: SuggestionListItem }) {
-  const st = getSuggestionStatus(row)
+  const st = getSuggestionStatus(row);
   if (st === 'APPROVED' && isSuggestionMarkedPaid(row)) {
     return (
       <Badge
-        variant="secondary"
-        className="border-violet-200 bg-violet-50 font-mono text-xs text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200"
+        variant='secondary'
+        className='border-violet-200 bg-violet-50 font-mono text-xs text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200'
       >
         Pago
       </Badge>
-    )
+    );
   }
   if (st === 'APPROVED') {
     return (
       <Badge
-        variant="secondary"
-        className="border-emerald-200 bg-emerald-50 font-mono text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200"
+        variant='secondary'
+        className='border-emerald-200 bg-emerald-50 font-mono text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200'
       >
         Conferido
       </Badge>
-    )
+    );
   }
   if (st === 'OPEN') {
     return (
       <Badge
-        variant="secondary"
-        className="font-mono text-xs border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200"
+        variant='secondary'
+        className='font-mono text-xs border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200'
       >
         Pendente
       </Badge>
-    )
+    );
   }
   return (
-    <span className="text-muted-foreground font-mono text-[0.7rem]">{st}</span>
-  )
+    <span className='text-muted-foreground font-mono text-[0.7rem]'>{st}</span>
+  );
 }
 
 const suggestionsQk = (
   unit: ConciliationUnit,
   rid: string | null | undefined,
-  byDay: boolean,
-  d: string,
+  range: VinculosDateRangeYmd,
   statusFilter: 'todos' | 'pendente' | 'conferido' | 'pago',
 ) =>
   [
     'reconciliation-suggestions',
     unit,
     rid ?? null,
-    byDay,
-    d,
+    range.from,
+    range.to,
     statusFilter,
-  ] as const
+  ] as const;
 
 /** Não dispara atalho A em campos de edição; checkboxes/radio não bloqueiam (foco fica neles após marcar). */
 function shouldBlockConfirmHotkey(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
-    return false
+    return false;
   }
   if (target.closest('textarea, select, [contenteditable]')) {
-    return true
+    return true;
   }
-  const input = target.closest('input')
+  const input = target.closest('input');
   if (!input) {
-    return false
+    return false;
   }
-  const type = (input as HTMLInputElement).type
+  const type = (input as HTMLInputElement).type;
   if (type === 'checkbox' || type === 'radio') {
-    return false
+    return false;
   }
-  return true
+  return true;
+}
+
+const SUGGESTIONS_LOADING_STEPS = [
+  '...verificando valores',
+  '...fazendo soma',
+  '...conferindo valores',
+] as const;
+
+function VinculosTableLoading() {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setStep((n) => (n + 1) % SUGGESTIONS_LOADING_STEPS.length);
+    }, 2200);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div
+      role='status'
+      aria-live='polite'
+      className='flex min-h-[min(12rem,40vh)] flex-col items-center justify-center gap-3 px-4 py-8'
+    >
+      <span className='sr-only'>Carregando sugestões de conciliação</span>
+      <div className='flex items-center gap-3'>
+        <Loader2
+          className='text-muted-foreground size-5 shrink-0 animate-spin'
+          aria-hidden
+        />
+        <div className='relative h-5 min-w-44 overflow-hidden'>
+          <p
+            key={step}
+            className='text-muted-foreground animate-in fade-in-0 slide-in-from-bottom-2 absolute inset-0 text-sm leading-5 whitespace-nowrap duration-500'
+          >
+            {SUGGESTIONS_LOADING_STEPS[step]}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function VinculosPage() {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   const [unitFilter, setUnitFilter] = useState<ConciliationUnit>(
     getStoredConciliationUnitForVinculos,
-  )
-  const [compareDate, setCompareDate] = useState<string>(getStoredVinculosCompareDate)
-  /** Se falso, lista todas as sugestões do run (sem recorte por data de vencimento). */
-  const [filterByDay, setFilterByDay] = useState(getStoredVinculosFilterByDay)
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  );
+  const [compareRange, setCompareRange] = useState<VinculosDateRangeYmd>(
+    getStoredVinculosDateRange,
+  );
+  const [calOpen, setCalOpen] = useState(false);
+  const [calDate, setCalDate] = useState<Date | undefined>(() => {
+    const r = getStoredVinculosDateRange();
+    return ymdToLocalDate(r.from);
+  });
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [tableSort, setTableSort] = useState<{
-    column: SortColumn
-    dir: SortDir
-  } | null>(null)
+    column: SortColumn;
+    dir: SortDir;
+  } | null>(null);
   const [statusFilter, setStatusFilter] = useState<
     'todos' | 'pendente' | 'conferido' | 'pago'
-  >('todos')
+  >('todos');
   const [suggestionDetail, setSuggestionDetail] = useState<{
-    row: SuggestionListItem
-    line: number
-  } | null>(null)
+    row: SuggestionListItem;
+    line: number;
+  } | null>(null);
   const [paymentInstructionId, setPaymentInstructionId] = useState<
     string | null
-  >(null)
+  >(null);
   const [markPaidForRow, setMarkPaidForRow] =
-    useState<SuggestionListItem | null>(null)
+    useState<SuggestionListItem | null>(null);
   const [paidInfoRow, setPaidInfoRow] = useState<SuggestionListItem | null>(
     null,
-  )
+  );
 
   useEffect(() => {
-    setStoredVinculosCompareDate(compareDate)
-  }, [compareDate])
+    setStoredVinculosDateRange(compareRange);
+  }, [compareRange]);
 
   useEffect(() => {
-    setStoredVinculosFilterByDay(filterByDay)
-  }, [filterByDay])
+    setStoredConciliationUnit(unitFilter);
+  }, [unitFilter]);
 
-  useEffect(() => {
-    setStoredConciliationUnit(unitFilter)
-  }, [unitFilter])
-
-  const { data: runId, isLoading: runLoading } = useQuery({
+  const {
+    data: runId,
+    isLoading: runLoading,
+    isError: runIsError,
+    error: runError,
+    refetch: refetchRun,
+  } = useQuery({
     queryKey: ['reconciliation-run', 'vinculos', unitFilter],
-    queryFn: async () => {
-      const existing = getStoredReconciliationRunId()
+    queryFn: async ({ signal }) => {
+      const rInit = requestInitWithTimeout(signal, 45_000);
+      const existing = getStoredReconciliationRunId();
       if (existing) {
         try {
-          const { run } = await getReconciliationRun(existing)
+          const { run } = await getReconciliationRun(existing, rInit);
           if (run.unit === unitFilter) {
-            return existing
+            return existing;
           }
         } catch {
           /* 404 / inválido */
         }
-        clearStoredReconciliationRunId()
+        clearStoredReconciliationRunId();
       }
-      const { run: latest } = await getLatestReconciliationRun({ unit: unitFilter })
+      const { run: latest } = await getLatestReconciliationRun(
+        { unit: unitFilter },
+        rInit,
+      );
       if (latest) {
-        setStoredReconciliationRunId(latest.id)
-        return latest.id
+        setStoredReconciliationRunId(latest.id);
+        return latest.id;
       }
-      return null
+      return null;
     },
-    staleTime: 0,
-    refetchOnMount: 'always',
-  })
+    /** Evita refetch a cada remount (ex.: React StrictMode) e reduz pisca de "Carregando…". */
+    staleTime: 60_000,
+  });
 
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: suggestionsQk(unitFilter, runId, filterByDay, compareDate, statusFilter),
-    queryFn: () =>
-      listRunSuggestions(runId!, {
-        ...(filterByDay ? { date: compareDate } : {}),
-        limit: 2000,
-        statusFilter,
-      }),
+  const {
+    data,
+    isLoading: suggestionsIsLoading,
+    isError,
+    error,
+    isFetching: suggestionsIsFetching,
+    isPlaceholderData: suggestionsIsPlaceholder,
+  } = useQuery({
+    queryKey: suggestionsQk(unitFilter, runId, compareRange, statusFilter),
+    queryFn: async ({ signal }) => {
+      const sInit = requestInitWithTimeout(signal, 120_000);
+      return listRunSuggestions(
+        runId!,
+        {
+          date: compareRange.from,
+          endDate: compareRange.to,
+          limit: 2000,
+          statusFilter,
+        },
+        sInit,
+      );
+    },
     enabled: runId != null,
-  })
+    /** Menos requisições em foco/remount; F5 ainda força carga completa. */
+    staleTime: 60_000,
+    /** Mantém tabela enquanto troca data/filtro (só aplica o novo dado ao chegar). */
+    placeholderData: (prev) => prev,
+  });
+
+  /** 1ª carga, ou data/filtro mudou: fetch novo enquanto a UI ainda mostra o resultado anterior (placeholder). */
+  const showSuggestionsTableLoading =
+    suggestionsIsLoading ||
+    (suggestionsIsFetching && suggestionsIsPlaceholder);
 
   const confirmBatchMutation = useMutation({
     mutationFn: (ids: string[]) => confirmSuggestionsBatch(runId!, ids),
     onSuccess: () => {
-      setSelectedIds(new Set())
+      setSelectedIds(new Set());
       if (runId) {
         void queryClient.invalidateQueries({
           queryKey: ['reconciliation-suggestions', unitFilter, runId],
-        })
+        });
       }
     },
-  })
+  });
 
   const markPaidMutation = useMutation({
-    mutationFn: (suggestionId: string) => markSuggestionPaid(runId!, suggestionId),
+    mutationFn: (suggestionId: string) =>
+      markSuggestionPaid(runId!, suggestionId),
     onSuccess: () => {
-      setMarkPaidForRow(null)
+      setMarkPaidForRow(null);
       if (runId) {
         void queryClient.invalidateQueries({
           queryKey: ['reconciliation-suggestions', unitFilter, runId],
-        })
+        });
       }
     },
-  })
+  });
 
-  const rows: SuggestionListItem[] = data?.items ?? []
+  const rows = useMemo<SuggestionListItem[]>(
+    () => data?.items ?? [],
+    [data?.items],
+  );
   const summary = useMemo(() => {
     if (runId == null) {
-      return { total: 0, pendente: 0, conferido: 0, pago: 0 }
+      return { total: 0, pendente: 0, conferido: 0, pago: 0 };
     }
-    return data?.summary ?? { total: 0, pendente: 0, conferido: 0, pago: 0 }
-  }, [runId, data?.summary])
+    return data?.summary ?? { total: 0, pendente: 0, conferido: 0, pago: 0 };
+  }, [runId, data?.summary]);
   const rowById = useMemo(
     () => new Map(rows.map((r) => [r.id, r] as const)),
     [rows],
-  )
+  );
 
   /** Cada item inclui `line` = posição 1..n na ordem original da API (referência fixa), mesmo após reordenar a tabela. */
   const displayRows = useMemo(() => {
     if (rows.length === 0) {
-      return [] as { row: SuggestionListItem; line: number }[]
+      return [] as { row: SuggestionListItem; line: number }[];
     }
-    const withOrig = rows.map((r, orig) => ({ r, orig, line: orig + 1 }))
+    const withOrig = rows.map((r, orig) => ({ r, orig, line: orig + 1 }));
     if (tableSort == null) {
-      return withOrig.map((x) => ({ row: x.r, line: x.line }))
+      return withOrig.map((x) => ({ row: x.r, line: x.line }));
     }
     if (tableSort.column === 'index') {
       withOrig.sort((a, b) =>
         tableSort.dir === 'asc' ? a.orig - b.orig : b.orig - a.orig,
-      )
+      );
     } else {
       withOrig.sort((a, b) => {
-        const na = amountForSort(a.r)
-        const nb = amountForSort(b.r)
+        const na = amountForSort(a.r);
+        const nb = amountForSort(b.r);
         if (Number.isNaN(na) && Number.isNaN(nb)) {
-          return 0
+          return 0;
         }
         if (Number.isNaN(na)) {
-          return 1
+          return 1;
         }
         if (Number.isNaN(nb)) {
-          return -1
+          return -1;
         }
-        return tableSort.dir === 'asc' ? na - nb : nb - na
-      })
+        return tableSort.dir === 'asc' ? na - nb : nb - na;
+      });
     }
-    return withOrig.map((x) => ({ row: x.r, line: x.line }))
-  }, [rows, tableSort])
+    return withOrig.map((x) => ({ row: x.r, line: x.line }));
+  }, [rows, tableSort]);
 
   const selectedConfirmableIds = useMemo(() => {
     return [...selectedIds].filter((id) => {
-      const r = rowById.get(id)
-      return r != null && canShowConfirmA(r)
-    })
-  }, [selectedIds, rowById])
+      const r = rowById.get(id);
+      return r != null && canShowConfirmA(r);
+    });
+  }, [selectedIds, rowById]);
 
-  const headerSelectRef = useRef<HTMLInputElement>(null)
+  const headerSelectRef = useRef<HTMLInputElement>(null);
   const allOnPageSelected = useMemo(
     () =>
       displayRows.length > 0 &&
       displayRows.every((item) => selectedIds.has(item.row.id)),
     [displayRows, selectedIds],
-  )
+  );
   const someOnPageSelected = useMemo(
     () => displayRows.some((item) => selectedIds.has(item.row.id)),
     [displayRows, selectedIds],
-  )
+  );
 
   useEffect(() => {
-    const el = headerSelectRef.current
+    const el = headerSelectRef.current;
     if (el) {
-      el.indeterminate = someOnPageSelected && !allOnPageSelected
+      el.indeterminate = someOnPageSelected && !allOnPageSelected;
     }
-  }, [someOnPageSelected, allOnPageSelected])
+  }, [someOnPageSelected, allOnPageSelected]);
 
   function toggleSelectedId(id: string) {
     setSelectedIds((prev) => {
-      const n = new Set(prev)
+      const n = new Set(prev);
       if (n.has(id)) {
-        n.delete(id)
+        n.delete(id);
       } else {
-        n.add(id)
+        n.add(id);
       }
-      return n
-    })
+      return n;
+    });
   }
 
   function toggleSelectAllOnPage() {
     setSelectedIds((prev) => {
-      const n = new Set(prev)
-      const pageIds = displayRows.map((i) => i.row.id)
-      const all =
-        pageIds.length > 0 && pageIds.every((pId) => n.has(pId))
+      const n = new Set(prev);
+      const pageIds = displayRows.map((i) => i.row.id);
+      const all = pageIds.length > 0 && pageIds.every((pId) => n.has(pId));
       if (all) {
         for (const pId of pageIds) {
-          n.delete(pId)
+          n.delete(pId);
         }
       } else {
         for (const pId of pageIds) {
-          n.add(pId)
+          n.add(pId);
         }
       }
-      return n
-    })
+      return n;
+    });
   }
 
   const runTitle =
-    runId == null
-      ? '—'
-      : (data?.run.title?.trim() || 'Conciliação')
+    runId == null ? '—' : data?.run.title?.trim() || 'Conciliação';
 
   const highConfidencePct = useMemo(() => {
     if (rows.length === 0) {
-      return 0
+      return 0;
     }
-    const good = rows.filter((r) => r.scorePercent >= 80).length
-    return Math.round((100 * good) / rows.length)
-  }, [rows])
+    const good = rows.filter((r) => r.scorePercent >= 80).length;
+    return Math.round((100 * good) / rows.length);
+  }, [rows]);
 
   /** Soma dos valores banco e ERP nas linhas atualmente exibidas (filtro/ordenação). */
   const displayAmountTotals = useMemo(() => {
-    let bankSum = 0
-    let bankN = 0
-    let internalSum = 0
-    let internalN = 0
+    let bankSum = 0;
+    let bankN = 0;
+    let internalSum = 0;
+    let internalN = 0;
     for (const { row } of displayRows) {
-      const b = parseAmount(row.amountBank)
+      const b = parseAmount(row.amountBank);
       if (!Number.isNaN(b)) {
-        bankSum += b
-        bankN += 1
+        bankSum += b;
+        bankN += 1;
       }
-      const i = parseAmount(row.amountInternal)
+      const i = parseAmount(row.amountInternal);
       if (!Number.isNaN(i)) {
-        internalSum += i
-        internalN += 1
+        internalSum += i;
+        internalN += 1;
       }
     }
     return {
       bankText: bankN > 0 ? formatBrlAmount(String(bankSum)) : '—',
       internalText: internalN > 0 ? formatBrlAmount(String(internalSum)) : '—',
-    }
-  }, [displayRows])
+    };
+  }, [displayRows]);
 
   function cycleSortIndex() {
     setTableSort((prev) => {
       if (prev?.column !== 'index') {
-        return { column: 'index', dir: 'asc' }
+        return { column: 'index', dir: 'asc' };
       }
       if (prev.dir === 'asc') {
-        return { column: 'index', dir: 'desc' }
+        return { column: 'index', dir: 'desc' };
       }
-      return null
-    })
+      return null;
+    });
   }
 
   function cycleSortAmount() {
     setTableSort((prev) => {
       if (prev?.column !== 'amount') {
-        return { column: 'amount', dir: 'desc' }
+        return { column: 'amount', dir: 'desc' };
       }
       if (prev.dir === 'desc') {
-        return { column: 'amount', dir: 'asc' }
+        return { column: 'amount', dir: 'asc' };
       }
-      return null
-    })
+      return null;
+    });
   }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'a' && e.key !== 'A') {
-        return
+        return;
       }
       if (shouldBlockConfirmHotkey(e.target)) {
-        return
+        return;
       }
       if (
         confirmBatchMutation.isPending ||
         selectedConfirmableIds.length === 0 ||
         !runId
       ) {
-        return
+        return;
       }
-      e.preventDefault()
-      confirmBatchMutation.mutate(selectedConfirmableIds)
+      e.preventDefault();
+      confirmBatchMutation.mutate(selectedConfirmableIds);
     }
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey);
     return () => {
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [confirmBatchMutation, runId, selectedConfirmableIds])
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [confirmBatchMutation, runId, selectedConfirmableIds]);
+
+  if (runIsError) {
+    const msg =
+      runError instanceof Error ? runError.message : 'Falha ao carregar a sessão de conciliação.';
+    return (
+      <div className='p-4 text-sm' role='alert'>
+        <p className='text-destructive'>{msg}</p>
+        <p className='text-muted-foreground mt-1'>
+          Confira se a API está acessível ({getApiBase()}) e se o banco de dados responde. Se
+          a rede demorou demais, tente de novo.
+        </p>
+        <Button
+          type='button'
+          variant='secondary'
+          className='mt-3'
+          onClick={() => {
+            void refetchRun();
+          }}
+        >
+          Tentar novamente
+        </Button>
+      </div>
+    );
+  }
 
   if (runLoading) {
-    return (
-      <div className="text-muted-foreground p-4 text-sm">Carregando…</div>
-    )
+    return <div className='text-muted-foreground p-4 text-sm'>Carregando…</div>;
   }
 
   return (
-    <div className="bg-muted/20 flex min-h-0 flex-1 flex-col gap-4 p-3 md:p-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Database className="text-muted-foreground size-5 shrink-0" />
-            <h1 className="text-foreground text-lg font-semibold tracking-tight md:text-xl">
+    <div className='bg-muted/20 flex min-h-0 flex-1 flex-col gap-4 p-3 md:p-6'>
+      <div className='flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between'>
+        <div className='min-w-0'>
+          <div className='flex items-center gap-2'>
+            <Database className='text-muted-foreground size-5 shrink-0' />
+            <h1 className='text-foreground text-lg font-semibold tracking-tight md:text-xl'>
               Vínculos e triagem
             </h1>
           </div>
-          <p className="text-muted-foreground mt-1 text-sm">
+          <p className='text-muted-foreground mt-1 text-sm'>
             Sessão: {runTitle} · {summary.total.toLocaleString('pt-BR')}{' '}
             sugestões
-            {filterByDay ? (
-              <>
-                {' '}
-                · vencimento em{' '}
-                {new Date(compareDate + 'T12:00:00').toLocaleDateString('pt-BR')}
-              </>
-            ) : (
-              ' (todas as datas)'
-            )}{' '}
+            {' '}
+            · vencimento: {formatCompareRangeLabel(compareRange)}{' '}
             · empresa: {unitFilter}
           </p>
         </div>
 
-        <div className="flex w-full flex-col items-stretch gap-2 sm:max-w-2xl sm:items-end">
-          <div className="flex flex-wrap items-end justify-end gap-3 sm:justify-end">
+        <div className='flex w-full flex-col items-stretch gap-2 sm:max-w-2xl sm:items-end'>
+          <div className='flex flex-wrap items-end justify-end gap-3 self-end sm:justify-end'>
             <>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-muted-foreground text-[0.65rem] uppercase">
-                    Pendentes
-                  </span>
-                  <button
-                    type="button"
-                    title={
-                      statusFilter === 'pendente'
-                        ? 'Mostrar todas as sugestões'
-                        : 'Mostrar só itens pendentes'
-                    }
-                    aria-pressed={statusFilter === 'pendente'}
-                    onClick={() => {
-                      setStatusFilter((f) =>
-                        f === 'pendente' ? 'todos' : 'pendente',
-                      )
-                      setSelectedIds(new Set())
-                    }}
-                    className={cn(
-                      'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                      statusFilter === 'pendente' &&
-                        'ring-2 ring-amber-500/60 ring-offset-1',
-                    )}
+              <div className='flex flex-col gap-0.5'>
+                <span className='text-muted-foreground text-[0.65rem] uppercase'>
+                  Pendentes
+                </span>
+                <button
+                  type='button'
+                  title={
+                    statusFilter === 'pendente'
+                      ? 'Mostrar todas as sugestões'
+                      : 'Mostrar só itens pendentes'
+                  }
+                  aria-pressed={statusFilter === 'pendente'}
+                  onClick={() => {
+                    setStatusFilter((f) =>
+                      f === 'pendente' ? 'todos' : 'pendente',
+                    );
+                    setSelectedIds(new Set());
+                  }}
+                  className={cn(
+                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+                    statusFilter === 'pendente' &&
+                      'ring-2 ring-amber-500/60 ring-offset-1',
+                  )}
+                >
+                  <Badge
+                    variant='secondary'
+                    className='h-7 w-full min-w-0 cursor-pointer border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200'
                   >
-                    <Badge
-                      variant="secondary"
-                      className="h-7 w-full min-w-0 cursor-pointer border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200"
-                    >
-                      {summary.pendente.toLocaleString('pt-BR')} pendentes
-                    </Badge>
-                  </button>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-muted-foreground text-[0.65rem] uppercase">
-                    Conferido
-                  </span>
-                  <button
-                    type="button"
-                    title={
-                      statusFilter === 'conferido'
-                        ? 'Mostrar todas as sugestões'
-                        : 'Mostrar só itens conferidos (ainda não pagos)'
-                    }
-                    aria-pressed={statusFilter === 'conferido'}
-                    onClick={() => {
-                      setStatusFilter((f) =>
-                        f === 'conferido' ? 'todos' : 'conferido',
-                      )
-                      setSelectedIds(new Set())
-                    }}
-                    className={cn(
-                      'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                      statusFilter === 'conferido' &&
-                        'ring-2 ring-emerald-500/60 ring-offset-1',
-                    )}
+                    {summary.pendente.toLocaleString('pt-BR')} pendentes
+                  </Badge>
+                </button>
+              </div>
+              <div className='flex flex-col gap-0.5'>
+                <span className='text-muted-foreground text-[0.65rem] uppercase'>
+                  Conferido
+                </span>
+                <button
+                  type='button'
+                  title={
+                    statusFilter === 'conferido'
+                      ? 'Mostrar todas as sugestões'
+                      : 'Mostrar só itens conferidos (ainda não pagos)'
+                  }
+                  aria-pressed={statusFilter === 'conferido'}
+                  onClick={() => {
+                    setStatusFilter((f) =>
+                      f === 'conferido' ? 'todos' : 'conferido',
+                    );
+                    setSelectedIds(new Set());
+                  }}
+                  className={cn(
+                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+                    statusFilter === 'conferido' &&
+                      'ring-2 ring-emerald-500/60 ring-offset-1',
+                  )}
+                >
+                  <Badge
+                    variant='secondary'
+                    className='h-7 w-full min-w-0 cursor-pointer border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200'
                   >
-                    <Badge
-                      variant="secondary"
-                      className="h-7 w-full min-w-0 cursor-pointer border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200"
-                    >
-                      {summary.conferido.toLocaleString('pt-BR')} conferido
-                    </Badge>
-                  </button>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-muted-foreground text-[0.65rem] uppercase">
-                    Pago
-                  </span>
-                  <button
-                    type="button"
-                    title={
-                      statusFilter === 'pago'
-                        ? 'Mostrar todas as sugestões'
-                        : 'Mostrar só itens marcados como pago'
-                    }
-                    aria-pressed={statusFilter === 'pago'}
-                    onClick={() => {
-                      setStatusFilter((f) => (f === 'pago' ? 'todos' : 'pago'))
-                      setSelectedIds(new Set())
-                    }}
-                    className={cn(
-                      'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                      statusFilter === 'pago' &&
-                        'ring-2 ring-violet-500/60 ring-offset-1',
-                    )}
+                    {summary.conferido.toLocaleString('pt-BR')} conferido
+                  </Badge>
+                </button>
+              </div>
+              <div className='flex flex-col gap-0.5'>
+                <span className='text-muted-foreground text-[0.65rem] uppercase'>
+                  Pago
+                </span>
+                <button
+                  type='button'
+                  title={
+                    statusFilter === 'pago'
+                      ? 'Mostrar todas as sugestões'
+                      : 'Mostrar só itens marcados como pago'
+                  }
+                  aria-pressed={statusFilter === 'pago'}
+                  onClick={() => {
+                    setStatusFilter((f) => (f === 'pago' ? 'todos' : 'pago'));
+                    setSelectedIds(new Set());
+                  }}
+                  className={cn(
+                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+                    statusFilter === 'pago' &&
+                      'ring-2 ring-violet-500/60 ring-offset-1',
+                  )}
+                >
+                  <Badge
+                    variant='secondary'
+                    className='h-7 w-full min-w-0 cursor-pointer border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200'
                   >
-                    <Badge
-                      variant="secondary"
-                      className="h-7 w-full min-w-0 cursor-pointer border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200"
-                    >
-                      {summary.pago.toLocaleString('pt-BR')} pago
-                    </Badge>
-                  </button>
-                </div>
+                    {summary.pago.toLocaleString('pt-BR')} pago
+                  </Badge>
+                </button>
+              </div>
             </>
-            <div className="flex min-w-[12rem] flex-col gap-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <Label
-                  htmlFor="compare-date"
-                  className="text-muted-foreground text-xs font-medium"
-                >
-                  Dia do comparativo
-                </Label>
-                <Button
-                  type="button"
-                  variant="link"
-                  size="xs"
-                  className="h-auto px-0 text-[0.7rem] font-normal"
-                  onClick={() => {
-                    setFilterByDay((v) => !v)
-                    setSelectedIds(new Set())
-                  }}
-                >
-                  {filterByDay ? 'Ver todas as datas' : 'Filtrar por dia'}
-                </Button>
-              </div>
-              <Input
-                id="compare-date"
-                type="date"
-                value={compareDate}
-                disabled={!filterByDay}
-                onChange={(e) => {
-                  setCompareDate(e.target.value)
-                  setSelectedIds(new Set())
+            <div className='flex w-max max-w-full min-w-0 flex-col gap-1.5'>
+              <Label
+                htmlFor='compare-date'
+                className='text-muted-foreground text-xs font-medium'
+              >
+                Data (vencimento)
+              </Label>
+              <Popover
+                open={calOpen}
+                onOpenChange={(o) => {
+                  setCalOpen(o);
+                  if (o) {
+                    setCalDate(ymdToLocalDate(compareRange.from));
+                  }
                 }}
-                className="h-9 w-full font-mono text-sm"
-              />
-            </div>
-            <div className="flex w-full min-w-0 flex-col gap-0.5 sm:max-w-[20rem]">
-              <span className="text-muted-foreground text-[0.65rem] uppercase">
-                Empresa
-              </span>
-              <div className="flex w-full min-w-0 flex-wrap justify-end gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className={cn(
-                    'h-9',
-                    unitFilter === 'PEDERTRACTOR' &&
-                      'ring-2 ring-sky-500/60 ring-offset-1',
-                  )}
-                  title="Só PEDERTRACTOR"
-                  aria-pressed={unitFilter === 'PEDERTRACTOR'}
-                  onClick={() => {
-                    setUnitFilter('PEDERTRACTOR')
-                    setSelectedIds(new Set())
-                  }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type='button'
+                    id='compare-date'
+                    variant='outline'
+                    className='text-foreground border-border hover:bg-background hover:text-foreground inline-flex h-9 max-w-full min-w-0 w-max justify-start gap-2 rounded-md border bg-transparent px-2.5 text-left text-[0.8125rem] font-normal leading-tight shadow-sm'
+                    aria-label='Selecionar data de vencimento do comparativo'
+                  >
+                    <CalendarIcon
+                      className='text-muted-foreground size-3.5 shrink-0'
+                      aria-hidden
+                    />
+                    <div className='text-foreground/90 flex min-w-0 flex-row flex-wrap items-baseline gap-x-1 gap-y-0.5 leading-tight'>
+                      <span className='min-w-0'>
+                        {formatYmdLongPt(compareRange.from)}
+                      </span>
+                    </div>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className='w-auto origin-[--radix-popover-content-transform-origin] overflow-hidden rounded-md p-2 shadow-md sm:p-3'
+                  side='bottom'
+                  align='end'
+                  sideOffset={8}
+                  avoidCollisions
+                  collisionPadding={12}
                 >
-                  PEDERTRACTOR
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className={cn(
-                    'h-9',
-                    unitFilter === 'TRACTOR' &&
-                      'ring-2 ring-sky-500/60 ring-offset-1',
-                  )}
-                  title="Só TRACTOR"
-                  aria-pressed={unitFilter === 'TRACTOR'}
-                  onClick={() => {
-                    setUnitFilter('TRACTOR')
-                    setSelectedIds(new Set())
-                  }}
-                >
-                  TRACTOR
-                </Button>
-              </div>
+                  <Calendar
+                    mode='single'
+                    numberOfMonths={1}
+                    className='p-0'
+                    selected={calDate}
+                    onSelect={(d) => {
+                      if (!d) {
+                        return;
+                      }
+                      setCalDate(d);
+                      const ymd = format(d, 'yyyy-MM-dd');
+                      setCompareRange({ from: ymd, to: ymd });
+                      setStatusFilter('pendente');
+                      setSelectedIds(new Set());
+                      setCalOpen(false);
+                    }}
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
+          </div>
+          <div className='flex w-full min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5 self-end sm:max-w-2xl'>
+            <Button
+              type='button'
+              size='xs'
+              variant='outline'
+              className={cn(
+                unitFilter === 'PEDERTRACTOR' &&
+                  'ring-2 ring-sky-500/60 ring-offset-1',
+              )}
+              title='Só PEDERTRACTOR'
+              aria-pressed={unitFilter === 'PEDERTRACTOR'}
+              onClick={() => {
+                setUnitFilter('PEDERTRACTOR');
+                setSelectedIds(new Set());
+              }}
+            >
+              PEDERTRACTOR
+            </Button>
+            <Button
+              type='button'
+              size='xs'
+              variant='outline'
+              className={cn(
+                unitFilter === 'TRACTOR' &&
+                  'ring-2 ring-sky-500/60 ring-offset-1',
+              )}
+              title='Só TRACTOR'
+              aria-pressed={unitFilter === 'TRACTOR'}
+              onClick={() => {
+                setUnitFilter('TRACTOR');
+                setSelectedIds(new Set());
+              }}
+            >
+              TRACTOR
+            </Button>
           </div>
         </div>
       </div>
 
       {isError && (
-        <p className="text-destructive text-sm" role="alert">
+        <p className='text-destructive text-sm' role='alert'>
           {error instanceof Error
             ? error.message
             : 'Não foi possível carregar as sugestões.'}
         </p>
       )}
       {confirmBatchMutation.isError && (
-        <p className="text-destructive text-sm" role="alert">
+        <p className='text-destructive text-sm' role='alert'>
           {confirmBatchMutation.error instanceof Error
             ? confirmBatchMutation.error.message
             : 'Não foi possível confirmar as sugestões selecionadas.'}
         </p>
       )}
 
-      <Card className="border-border/60 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <CardContent className="p-0">
-          {isLoading ? (
-            <p className="text-muted-foreground p-4 text-sm">Carregando…</p>
+      <Card className='border-border/60 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+        <CardContent className='p-0'>
+          {showSuggestionsTableLoading ? (
+            <VinculosTableLoading />
           ) : (
-            <div className="max-w-full overflow-x-auto">
+            <div className='max-w-full overflow-x-auto'>
               <Table>
                 <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead className="text-muted-foreground w-8 px-1 text-center text-xs">
+                  <TableRow className='hover:bg-transparent'>
+                    <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs'>
                       {displayRows.length > 0 ? (
                         <input
                           ref={headerSelectRef}
-                          type="checkbox"
-                          className="border-input accent-primary size-3.5 cursor-pointer rounded border"
+                          type='checkbox'
+                          className='border-input accent-primary size-3.5 cursor-pointer rounded border'
                           checked={allOnPageSelected}
                           onChange={toggleSelectAllOnPage}
                           onClick={(e) => e.stopPropagation()}
-                          title="Selecionar todas as linhas visíveis"
-                          aria-label="Selecionar todas as linhas visíveis"
+                          title='Selecionar todas as linhas visíveis'
+                          aria-label='Selecionar todas as linhas visíveis'
                         />
                       ) : null}
                     </TableHead>
-                    <TableHead className="w-20 pl-2 pr-1 font-mono text-xs">
+                    <TableHead className='w-20 pl-2 pr-1 font-mono text-xs'>
                       <SortableTh
-                        label="#"
+                        label='#'
                         active={tableSort?.column === 'index'}
-                        direction={tableSort?.column === 'index' ? tableSort.dir : null}
+                        direction={
+                          tableSort?.column === 'index' ? tableSort.dir : null
+                        }
                         onClick={cycleSortIndex}
-                        screenReaderHint="Ordena a lista pela ordem original. A coluna # mostra sempre o número de linha original (1…n) de cada registro."
+                        screenReaderHint='Ordena a lista pela ordem original. A coluna # mostra sempre o número de linha original (1…n) de cada registro.'
                       />
                     </TableHead>
-                    <TableHead className="min-w-40 text-xs">Externo (banco)</TableHead>
-                    <TableHead className="min-w-40 text-xs">Interno (ERP)</TableHead>
-                    <TableHead className="min-w-[6.5rem] whitespace-nowrap text-xs">
+                    <TableHead className='min-w-40 text-xs'>
+                      Externo (banco)
+                    </TableHead>
+                    <TableHead className='min-w-40 text-xs'>
+                      Interno (ERP)
+                    </TableHead>
+                    <TableHead className='min-w-26 whitespace-nowrap text-xs'>
                       Vencimento
                     </TableHead>
-                    <TableHead className="min-w-[14rem] whitespace-nowrap text-right text-xs">
-                      <div className="flex justify-end">
+                    <TableHead className='min-w-56 whitespace-nowrap text-right text-xs'>
+                      <div className='flex justify-end'>
                         <SortableTh
-                          label="Banco / ERP"
-                          className="justify-end"
+                          label='Banco / ERP'
+                          className='justify-end'
                           active={tableSort?.column === 'amount'}
                           direction={
-                            tableSort?.column === 'amount' ? tableSort.dir : null
+                            tableSort?.column === 'amount'
+                              ? tableSort.dir
+                              : null
                           }
                           onClick={cycleSortAmount}
-                          screenReaderHint="Ordenar pelo valor do banco (ou interno se não houver banco). Maior para menor, menor para maior ou padrão."
+                          screenReaderHint='Ordenar pelo valor do banco (ou interno se não houver banco). Maior para menor, menor para maior ou padrão.'
                         />
                       </div>
                     </TableHead>
-                    <TableHead className="min-w-[8rem] text-xs">
+                    <TableHead className='min-w-32 text-xs'>
                       Motivo / diferença
                     </TableHead>
-                    <TableHead className="w-24 text-xs">Status</TableHead>
-                    <TableHead className="w-16 min-w-14 text-right text-xs">
+                    <TableHead className='w-24 text-xs'>Status</TableHead>
+                    <TableHead className='w-16 min-w-14 text-right text-xs'>
                       Ações
                     </TableHead>
                   </TableRow>
@@ -955,111 +1144,94 @@ export function VinculosPage() {
                     <TableRow>
                       <TableCell
                         colSpan={9}
-                        className="text-muted-foreground p-6 text-center text-sm"
+                        className='text-muted-foreground p-6 text-center text-sm'
                       >
                         {runId == null ? (
                           'Não há itens a exibir.'
-                        ) : filterByDay ? (
-                          <span className="inline-flex flex-col items-center gap-3 sm:inline-flex sm:flex-row sm:flex-wrap sm:justify-center sm:gap-x-1">
-                            <span>
-                              Nenhuma sugestão com vencimento em{' '}
-                              {new Date(compareDate + 'T12:00:00').toLocaleDateString(
-                                'pt-BR',
-                              )}
-                              . Os lançamentos podem estar noutro dia (ou sem data de
-                              vencimento).
-                            </span>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              onClick={() => {
-                                setFilterByDay(false)
-                                setSelectedIds(new Set())
-                              }}
-                            >
-                              Ver todas as datas
-                            </Button>
-                          </span>
                         ) : (
-                          <>
-                            Nenhuma sugestão para esta execução. Quando a conciliação
-                            automática passar a gerar sugestões, elas aparecerão aqui.
-                          </>
+                          <span>
+                            Nenhuma sugestão com vencimento em{' '}
+                            {formatYmdLongPt(compareRange.from)}. Os
+                            lançamentos podem estar noutro dia (ou sem data de
+                            vencimento). Ajuste a data no seletor acima.
+                          </span>
                         )}
                       </TableCell>
                     </TableRow>
                   ) : (
                     displayRows.map((item, idx) => {
-                      const row = item.row
-                      const isSel = selectedIds.has(row.id)
+                      const row = item.row;
+                      const isSel = selectedIds.has(row.id);
                       return (
                         <TableRow
                           key={row.id}
                           data-state={isSel ? 'selected' : undefined}
-                          role="button"
+                          role='button'
                           tabIndex={0}
                           aria-label={`Abrir detalhe da sugestão (linha ${item.line})`}
                           onClick={() => {
-                            setSuggestionDetail({ row, line: item.line })
+                            setSuggestionDetail({ row, line: item.line });
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              setSuggestionDetail({ row, line: item.line })
+                              e.preventDefault();
+                              setSuggestionDetail({ row, line: item.line });
                             }
                           }}
                           className={cn(
                             'border-border/40',
                             'cursor-pointer',
                             idx % 2 === 0 ? 'bg-card' : 'bg-muted/30',
-                            isSel &&
-                              'bg-sky-50 dark:bg-sky-950/40',
+                            isSel && 'bg-sky-50 dark:bg-sky-950/40',
                           )}
                         >
                           <TableCell
-                            className="w-8 px-1"
+                            className='w-8 px-1'
                             onClick={(e) => e.stopPropagation()}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
-                                e.stopPropagation()
+                                e.stopPropagation();
                               }
                             }}
                           >
                             <input
-                              type="checkbox"
-                              className="border-input accent-primary size-3.5 cursor-pointer rounded border"
+                              type='checkbox'
+                              className='border-input accent-primary size-3.5 cursor-pointer rounded border'
                               checked={isSel}
                               onChange={() => {
-                                toggleSelectedId(row.id)
+                                toggleSelectedId(row.id);
                               }}
                               aria-label={`Selecionar linha ${item.line}`}
                             />
                           </TableCell>
-                          <TableCell className="text-muted-foreground w-20 pl-3 pr-1 font-mono text-xs">
+                          <TableCell className='text-muted-foreground w-20 pl-3 pr-1 font-mono text-xs'>
                             {item.line}
                           </TableCell>
-                          <TableCell className="max-w-56 truncate text-sm">
+                          <TableCell className='max-w-56 truncate text-sm'>
                             {row.externalName}
                           </TableCell>
-                          <TableCell className="max-w-56 truncate text-sm">
+                          <TableCell className='max-w-56 truncate text-sm'>
                             {row.internalName}
                           </TableCell>
                           <TableCell
-                            className="text-muted-foreground min-w-[6.5rem] whitespace-nowrap font-mono text-xs tabular-nums"
-                            title={row.dueDate ? undefined : 'Sem data de vencimento'}
+                            className='text-muted-foreground min-w-26 whitespace-nowrap font-mono text-xs tabular-nums'
+                            title={
+                              row.dueDate ? undefined : 'Sem data de vencimento'
+                            }
                           >
                             {formatDatePt(row.dueDate)}
                           </TableCell>
                           <TableCell
-                            className="min-w-56 whitespace-normal break-words text-right font-mono text-sm leading-snug tabular-nums"
+                            className='min-w-56 whitespace-normal wrap-break-word text-right font-mono text-sm leading-snug tabular-nums'
                             title={bancoBarraInternoText(row)}
                           >
-                            <span className="text-foreground">
+                            <span className='text-foreground'>
                               {formatBrlAmount(row.amountBank ?? null)}
                             </span>
-                            <span className="text-muted-foreground mx-1">/</span>
-                            <span className="text-foreground">
+                            <span className='text-muted-foreground mx-1'>
+                              /
+                            </span>
+                            <span className='text-foreground'>
                               {formatBrlAmount(row.amountInternal ?? null)}
                             </span>
                           </TableCell>
@@ -1070,39 +1242,39 @@ export function VinculosPage() {
                             <StatusCell row={row} />
                           </TableCell>
                           <TableCell
-                            className="text-right"
+                            className='text-right'
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <div className="inline-flex items-center justify-end gap-1">
+                            <div className='inline-flex items-center justify-end gap-1'>
                               {getSuggestionStatus(row) === 'APPROVED' &&
                               getApprovedPaymentVinculoKind(row) === 'PIX' ? (
                                 <Tooltip>
                                   <TooltipTrigger
-                                    render={<span className="inline-flex" />}
+                                    render={<span className='inline-flex' />}
                                   >
                                     <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon-sm"
+                                      type='button'
+                                      variant='ghost'
+                                      size='icon-sm'
                                       className={cn(
                                         'h-7 w-7',
                                         row.vinculoRegistry?.hasDetails
                                           ? 'text-teal-600 hover:text-teal-700 dark:text-teal-400'
                                           : 'text-muted-foreground/60 opacity-60 hover:opacity-100',
                                       )}
-                                      aria-label="Instrução de pagamento PIX"
+                                      aria-label='Instrução de pagamento PIX'
                                       disabled={!runId}
                                       onClick={(e) => {
-                                        e.stopPropagation()
+                                        e.stopPropagation();
                                         if (runId) {
-                                          setPaymentInstructionId(row.id)
+                                          setPaymentInstructionId(row.id);
                                         }
                                       }}
                                     >
-                                      <QrCode className="size-4" />
+                                      <QrCode className='size-4' />
                                     </Button>
                                   </TooltipTrigger>
-                                  <TooltipContent className="max-w-[16rem] text-xs">
+                                  <TooltipContent className='max-w-[16rem] text-xs'>
                                     {row.vinculoRegistry?.hasDetails
                                       ? 'Abrir valor, vencimento e dados do PIX'
                                       : 'Sem cadastro completo em PIX & TED: clique para ver valor e vencimento, e complete o cadastro no menu lateral.'}
@@ -1113,31 +1285,31 @@ export function VinculosPage() {
                               getApprovedPaymentVinculoKind(row) === 'TED' ? (
                                 <Tooltip>
                                   <TooltipTrigger
-                                    render={<span className="inline-flex" />}
+                                    render={<span className='inline-flex' />}
                                   >
                                     <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon-sm"
+                                      type='button'
+                                      variant='ghost'
+                                      size='icon-sm'
                                       className={cn(
                                         'h-7 w-7',
                                         row.vinculoRegistry?.hasDetails
                                           ? 'text-sky-600 hover:text-sky-700 dark:text-sky-400'
                                           : 'text-muted-foreground/60 opacity-60 hover:opacity-100',
                                       )}
-                                      aria-label="Instrução de pagamento TED"
+                                      aria-label='Instrução de pagamento TED'
                                       disabled={!runId}
                                       onClick={(e) => {
-                                        e.stopPropagation()
+                                        e.stopPropagation();
                                         if (runId) {
-                                          setPaymentInstructionId(row.id)
+                                          setPaymentInstructionId(row.id);
                                         }
                                       }}
                                     >
-                                      <Landmark className="size-4" />
+                                      <Landmark className='size-4' />
                                     </Button>
                                   </TooltipTrigger>
-                                  <TooltipContent className="max-w-[16rem] text-xs">
+                                  <TooltipContent className='max-w-[16rem] text-xs'>
                                     {row.vinculoRegistry?.hasDetails
                                       ? 'Abrir valor, vencimento e dados bancários do TED'
                                       : 'Sem cadastro completo em PIX & TED: clique para ver valor e vencimento, e complete o cadastro no menu lateral.'}
@@ -1149,48 +1321,48 @@ export function VinculosPage() {
                                 isSuggestionMarkedPaid(row) ? (
                                   <Tooltip>
                                     <TooltipTrigger
-                                      render={<span className="inline-flex" />}
+                                      render={<span className='inline-flex' />}
                                     >
                                       <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        className="text-emerald-600 hover:text-emerald-700 h-7 w-7 dark:text-emerald-400"
-                                        aria-label="Ver data do pagamento"
+                                        type='button'
+                                        variant='ghost'
+                                        size='icon-sm'
+                                        className='text-emerald-600 hover:text-emerald-700 h-7 w-7 dark:text-emerald-400'
+                                        aria-label='Ver data do pagamento'
                                         disabled={!runId}
                                         onClick={(e) => {
-                                          e.stopPropagation()
-                                          setPaidInfoRow(row)
+                                          e.stopPropagation();
+                                          setPaidInfoRow(row);
                                         }}
                                       >
-                                        <Banknote className="size-4" />
+                                        <Banknote className='size-4' />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent className="max-w-[16rem] text-xs">
+                                    <TooltipContent className='max-w-[16rem] text-xs'>
                                       Clique para ver a data do pagamento
                                     </TooltipContent>
                                   </Tooltip>
                                 ) : (
                                   <Tooltip>
                                     <TooltipTrigger
-                                      render={<span className="inline-flex" />}
+                                      render={<span className='inline-flex' />}
                                     >
                                       <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        className="text-amber-700 hover:text-amber-800 h-7 w-7 dark:text-amber-400"
-                                        aria-label="Clique para confirmar pagamento"
+                                        type='button'
+                                        variant='ghost'
+                                        size='icon-sm'
+                                        className='text-amber-700 hover:text-amber-800 h-7 w-7 dark:text-amber-400'
+                                        aria-label='Clique para confirmar pagamento'
                                         disabled={!runId}
                                         onClick={(e) => {
-                                          e.stopPropagation()
-                                          setMarkPaidForRow(row)
+                                          e.stopPropagation();
+                                          setMarkPaidForRow(row);
                                         }}
                                       >
-                                        <Banknote className="size-4" />
+                                        <Banknote className='size-4' />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent className="max-w-[16rem] text-xs">
+                                    <TooltipContent className='max-w-[16rem] text-xs'>
                                       Clique para confirmar pagamento
                                     </TooltipContent>
                                   </Tooltip>
@@ -1199,23 +1371,23 @@ export function VinculosPage() {
                               {isSel && canShowConfirmA(row) ? (
                                 <Tooltip>
                                   <TooltipTrigger
-                                    render={<span className="inline-flex" />}
+                                    render={<span className='inline-flex' />}
                                   >
                                     <Button
-                                      type="button"
-                                      size="icon-sm"
-                                      variant="outline"
-                                      className="h-7 w-7 p-0 font-mono text-[0.7rem] shadow-none"
+                                      type='button'
+                                      size='icon-sm'
+                                      variant='outline'
+                                      className='h-7 w-7 p-0 font-mono text-[0.7rem] shadow-none'
                                       disabled={confirmBatchMutation.isPending}
                                       onClick={() => {
-                                        confirmBatchMutation.mutate([row.id])
+                                        confirmBatchMutation.mutate([row.id]);
                                       }}
-                                      aria-label="Confirmar (A)"
+                                      aria-label='Confirmar (A)'
                                     >
                                       A
                                     </Button>
                                   </TooltipTrigger>
-                                  <TooltipContent className="text-xs">
+                                  <TooltipContent className='text-xs'>
                                     {selectedIds.size > 1
                                       ? 'Confirma só esta linha; a tecla A confirma o grupo selecionado'
                                       : 'Confirmar como conferido (tecla A)'}
@@ -1235,24 +1407,24 @@ export function VinculosPage() {
         </CardContent>
       </Card>
 
-      <footer className="text-muted-foreground border-border/60 flex w-full min-w-0 flex-col gap-2 border-t pt-2 text-xs md:flex-row md:items-center">
-        <div className="font-mono min-w-0 shrink-0">
+      <footer className='text-muted-foreground border-border/60 flex w-full min-w-0 flex-col gap-2 border-t pt-2 text-xs md:flex-row md:items-center'>
+        <div className='font-mono min-w-0 shrink-0'>
           <span>Total: {summary.total}</span>
-          <span className="mx-2">·</span>
+          <span className='mx-2'>·</span>
           <span>Exibindo: {displayRows.length} linha(s)</span>
-          <span className="mx-2">·</span>
+          <span className='mx-2'>·</span>
           <span>Selecionado: {selectedIds.size}</span>
           {selectedIds.size > 0 ? (
             <span>
-              <span className="mx-2">·</span>
+              <span className='mx-2'>·</span>
               <span>com ação A: {selectedConfirmableIds.length}</span>
             </span>
           ) : null}
         </div>
         {rows.length > 0 ? (
           <div
-            className="font-mono flex min-w-0 flex-1 justify-center px-2 text-center tabular-nums"
-            title="Soma dos valores banco e ERP (linhas exibidas)"
+            className='font-mono flex min-w-0 flex-1 justify-center px-2 text-center tabular-nums'
+            title='Soma dos valores banco e ERP (linhas exibidas)'
           >
             Banco / ERP: {displayAmountTotals.bankText} /{' '}
             {displayAmountTotals.internalText}
@@ -1264,7 +1436,7 @@ export function VinculosPage() {
             rows.length === 0 && 'md:ml-auto',
           )}
         >
-          <Zap className="size-3.5 shrink-0" />
+          <Zap className='size-3.5 shrink-0' />
           <span>
             Sugestões fortes (≥80%): ~{highConfidencePct}%{' '}
             {rows.length === 0 ? '' : 'do conjunto exibido'}
@@ -1276,13 +1448,13 @@ export function VinculosPage() {
         open={markPaidForRow != null}
         onOpenChange={(open) => {
           if (!open) {
-            setMarkPaidForRow(null)
+            setMarkPaidForRow(null);
           }
         }}
         isPending={markPaidMutation.isPending}
         onConfirmYes={() => {
           if (markPaidForRow) {
-            markPaidMutation.mutate(markPaidForRow.id)
+            markPaidMutation.mutate(markPaidForRow.id);
           }
         }}
       />
@@ -1291,29 +1463,29 @@ export function VinculosPage() {
         open={paidInfoRow != null}
         onOpenChange={(open) => {
           if (!open) {
-            setPaidInfoRow(null)
+            setPaidInfoRow(null);
           }
         }}
       >
         <DialogContent
-          className="max-w-md gap-0 p-0 sm:max-w-md"
+          className='max-w-md gap-0 p-0 sm:max-w-md'
           showCloseButton
         >
-          <div className="p-5 sm:p-6">
-            <DialogHeader className="p-0">
+          <div className='p-5 sm:p-6'>
+            <DialogHeader className='p-0'>
               <DialogTitle>Conta paga</DialogTitle>
               <DialogDescription>
                 Pagamento registrado em{' '}
-                <span className="text-foreground font-medium">
+                <span className='text-foreground font-medium'>
                   {formatDateTimePtBr(paidInfoRow?.paidAt)}
                 </span>
                 .
               </DialogDescription>
             </DialogHeader>
-            <div className="mt-6 flex justify-end">
+            <div className='mt-6 flex justify-end'>
               <Button
-                type="button"
-                variant="outline"
+                type='button'
+                variant='outline'
                 onClick={() => setPaidInfoRow(null)}
               >
                 Fechar
@@ -1329,7 +1501,7 @@ export function VinculosPage() {
         open={paymentInstructionId != null}
         onOpenChange={(open) => {
           if (!open) {
-            setPaymentInstructionId(null)
+            setPaymentInstructionId(null);
           }
         }}
       />
@@ -1341,16 +1513,16 @@ export function VinculosPage() {
         line={suggestionDetail?.line ?? null}
         onOpenChange={(next) => {
           if (!next) {
-            setSuggestionDetail(null)
+            setSuggestionDetail(null);
           }
         }}
         onResolved={() => {
           if (runId) {
             queryClient.invalidateQueries({
               queryKey: ['reconciliation-suggestions', unitFilter, runId],
-            })
+            });
           }
-          setSuggestionDetail(null)
+          setSuggestionDetail(null);
         }}
       />
     </div>
@@ -1365,18 +1537,18 @@ function SortableTh({
   className,
   screenReaderHint,
 }: {
-  label: string
-  active: boolean
-  direction: SortDir | null
-  onClick: () => void
-  className?: string
-  screenReaderHint: string
+  label: string;
+  active: boolean;
+  direction: SortDir | null;
+  onClick: () => void;
+  className?: string;
+  screenReaderHint: string;
 }) {
   return (
     <Button
-      type="button"
-      variant="ghost"
-      size="xs"
+      type='button'
+      variant='ghost'
+      size='xs'
       onClick={onClick}
       className={cn(
         'text-muted-foreground -mx-1.5 h-7 gap-1 font-mono font-medium tracking-wide',
@@ -1384,17 +1556,20 @@ function SortableTh({
         className,
       )}
     >
-      <span className="uppercase leading-none">{label}</span>
+      <span className='uppercase leading-none'>{label}</span>
       {active && direction != null ? (
         direction === 'asc' ? (
-          <ArrowUp className="size-3.5 opacity-100" />
+          <ArrowUp className='size-3.5 opacity-100' />
         ) : (
-          <ArrowDown className="size-3.5 opacity-100" />
+          <ArrowDown className='size-3.5 opacity-100' />
         )
       ) : (
-        <ArrowUpDown className="text-muted-foreground/45 size-3.5" aria-hidden />
+        <ArrowUpDown
+          className='text-muted-foreground/45 size-3.5'
+          aria-hidden
+        />
       )}
-      <span className="sr-only">{screenReaderHint}</span>
+      <span className='sr-only'>{screenReaderHint}</span>
     </Button>
-  )
+  );
 }

@@ -24,9 +24,11 @@ import {
 import {
   confirmSuggestion,
   confirmSuggestionsBatch,
+  getBankOnlyInternalSumCandidates,
   getSuggestionMultipleCandidates,
   listRunSuggestions,
   markSuggestionPaid,
+  resolveBankOnlyInternalSum,
   resolveMultipleCandidateAndConfirm,
   linkPaymentVinculo,
 } from '../controllers/reconciliation-suggestions-controller.js';
@@ -92,6 +94,16 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     '/runs/:runId/suggestions/:suggestionId/candidates',
     { preHandler: requireFinancial },
     getSuggestionMultipleCandidates,
+  );
+  app.get(
+    '/runs/:runId/suggestions/:suggestionId/bank-only-internal-sums',
+    { preHandler: requireFinancial },
+    getBankOnlyInternalSumCandidates,
+  );
+  app.post(
+    '/runs/:runId/suggestions/:suggestionId/resolve-bank-only-internal-sum',
+    { preHandler: requireFinancial },
+    resolveBankOnlyInternalSum,
   );
   app.post(
     '/runs/:runId/suggestions/:suggestionId/resolve-candidate',

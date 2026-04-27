@@ -6,6 +6,29 @@ export function getApiBase(): string {
   return base;
 }
 
+/** Usado nas queryFns do React Query: aborta se o request demorar demais ou o componente desmontar. */
+export function requestInitWithTimeout(
+  querySignal: AbortSignal | undefined,
+  timeoutMs: number,
+): RequestInit {
+  if (querySignal == null) {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      return { signal: AbortSignal.timeout(timeoutMs) };
+    }
+    return {};
+  }
+  if (
+    typeof AbortSignal !== 'undefined' &&
+    typeof AbortSignal.timeout === 'function' &&
+    typeof AbortSignal.any === 'function'
+  ) {
+    return {
+      signal: AbortSignal.any([querySignal, AbortSignal.timeout(timeoutMs)]),
+    };
+  }
+  return { signal: querySignal };
+}
+
 export function getStoredToken(): string | null {
   return localStorage.getItem('reconcile_token');
 }
@@ -171,17 +194,19 @@ export async function createReconciliationRun(body: {
 /** Verifica se a execução de conciliação ainda existe no servidor (evita 404 no upload com id antigo no storage). */
 export async function getReconciliationRun(
   runId: string,
+  init?: RequestInit,
 ): Promise<{ run: ReconciliationRunDto }> {
-  return apiJson(`/reconciliation/runs/${runId}`);
+  return apiJson(`/reconciliation/runs/${runId}`, init);
 }
 
 /** Última execução do usuário para a empresa (reabre triagem sem reimportar). */
-export async function getLatestReconciliationRun(params: {
-  unit: 'PEDERTRACTOR' | 'TRACTOR'
-}): Promise<{ run: ReconciliationRunDto | null }> {
+export async function getLatestReconciliationRun(
+  params: { unit: 'PEDERTRACTOR' | 'TRACTOR' },
+  init?: RequestInit,
+): Promise<{ run: ReconciliationRunDto | null }> {
   const sp = new URLSearchParams()
   sp.set('unit', params.unit)
-  return apiJson(`/reconciliation/runs/latest?${sp.toString()}`)
+  return apiJson(`/reconciliation/runs/latest?${sp.toString()}`, init)
 }
 
 /**
@@ -230,12 +255,29 @@ export type SuggestionListItem = {
   vinculoRegistry?: { id: string; hasDetails: boolean } | null
   /** Conta marcada como paga (persistido). */
   paidAt?: string | null
+  /**
+   * Só banco (sem par interno): há soma de 2+ títulos ERP que fecha o extrato.
+   * Só ERP (sem par banco): este lançamento entra em alguma dessas somas que
+   * fecha um extrato “só banco” na triagem.
+   */
+  sumAggregationAvailable?: boolean
+  /** Detalhe de cada título ERP vinculado (motivo agregado, após confirmar). */
+  aggregatedErpLines?: AggregatedErpLineDto[]
+}
+
+export type AggregatedErpLineDto = {
+  id: string
+  supplierNameRaw: string
+  amount: string
+  dueDate: string | null
+  invoiceNumber: string | null
 }
 
 export type SuggestionListResponse = {
   run: ReconciliationRunDto
   filter: {
     compareDate: string | null
+    compareEndDate: string | null
     statusFilter: 'todos' | 'pendente' | 'conferido' | 'pago'
   }
   summary: { total: number; pendente: number; conferido: number; pago: number }
@@ -247,13 +289,18 @@ export async function listRunSuggestions(
   runId: string,
   params?: {
     date?: string
+    endDate?: string
     limit?: number
     statusFilter?: 'todos' | 'pendente' | 'conferido' | 'pago'
   },
+  init?: RequestInit,
 ): Promise<SuggestionListResponse> {
   const sp = new URLSearchParams()
   if (params?.date) {
     sp.set('date', params.date)
+  }
+  if (params?.endDate && params.endDate !== params.date) {
+    sp.set('endDate', params.endDate)
   }
   if (params?.limit != null) {
     sp.set('limit', String(params.limit))
@@ -264,6 +311,7 @@ export async function listRunSuggestions(
   const q = sp.toString()
   return apiJson(
     `/reconciliation/runs/${runId}/suggestions${q ? `?${q}` : ''}`,
+    init,
   )
 }
 
@@ -331,6 +379,80 @@ export async function resolveMultipleCandidateAndConfirm(
 }> {
   return apiJson(
     `/reconciliation/runs/${runId}/suggestions/${suggestionId}/resolve-candidate`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+}
+
+export type BankOnlySumInternalRow = {
+  id: string
+  supplierNameRaw: string
+  amount: string
+  dueDate: string | null
+  invoiceNumber: string | null
+  nameScore: number
+  sourceSuggestionId: string
+}
+
+export type BankOnlySumCombination = {
+  internalRecordIds: string[]
+  avgNameScore: number
+  internals: BankOnlySumInternalRow[]
+}
+
+export type BankOnlyManualPickRow = {
+  id: string
+  supplierNameRaw: string
+  amount: string
+  dueDate: string | null
+  sourceSuggestionId: string
+}
+
+export type BankOnlyInternalSumResponse = {
+  applicable: boolean
+  targetAmount: string | null
+  targetCents: number | null
+  maxCandidatesConsidered: number
+  /** Total de títulos internos elegíveis (valor da parcela ≤ extrato), antes do truncamento. */
+  totalEligible?: number
+  /**
+   * per_line: todos os títulos da combinação têm nome plausível vs. o extrato;
+   * amount_only: só bateu o valor (revisar nomes antes de vincular).
+   */
+  nameMatch?: 'per_line' | 'amount_only' | null
+  /**
+   * Títulos ainda "SEM PAR BANCO" (só interno) para vincular manualmente ao extrato.
+   */
+  manualPool?: BankOnlyManualPickRow[]
+  bankRecordId: string | null
+  bankRecord: {
+    id: string
+    beneficiaryNameRaw: string
+    amount: string
+    dueDate: string | null
+  } | null
+  combinations: BankOnlySumCombination[]
+}
+
+export async function getBankOnlyInternalSumCandidates(
+  runId: string,
+  suggestionId: string,
+  signal?: AbortSignal,
+): Promise<BankOnlyInternalSumResponse> {
+  return apiJson<BankOnlyInternalSumResponse>(
+    `/reconciliation/runs/${runId}/suggestions/${suggestionId}/bank-only-internal-sums`,
+    { signal },
+  )
+}
+
+export async function resolveBankOnlyInternalSum(
+  runId: string,
+  suggestionId: string,
+  body: { internalRecordIds: string[] },
+): Promise<{
+  suggestion: { id: string; status: string; confirmedAt: string | null }
+}> {
+  return apiJson(
+    `/reconciliation/runs/${runId}/suggestions/${suggestionId}/resolve-bank-only-internal-sum`,
     { method: 'POST', body: JSON.stringify(body) },
   )
 }

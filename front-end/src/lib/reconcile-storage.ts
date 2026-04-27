@@ -6,7 +6,8 @@ const CONCILIACAO_UNIT_KEY = 'reconcile_conciliacao_unit'
 export type ConciliationUnit = 'PEDERTRACTOR' | 'TRACTOR'
 
 const VINCULOS_COMPARE_DATE_KEY = 'reconcile_vinculos_compare_date'
-const VINCULOS_FILTER_BY_DAY_KEY = 'reconcile_vinculos_filter_by_day'
+const VINCULOS_COMPARE_RANGE_KEY = 'reconcile_vinculos_compare_range'
+export type VinculosDateRangeYmd = { from: string; to: string }
 
 function todayIsoDate(): string {
   const d = new Date()
@@ -62,56 +63,80 @@ export function clearStoredReconciliationRunId() {
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/
 
-export function getStoredVinculosCompareDate(): string {
-  if (typeof window === 'undefined') {
-    return todayIsoDate()
+function parseVinculosRange(s: string | null): VinculosDateRangeYmd | null {
+  if (s == null) {
+    return null
   }
   try {
+    const o = JSON.parse(s) as { from?: unknown; to?: unknown }
+    if (
+      typeof o.from === 'string' &&
+      typeof o.to === 'string' &&
+      YMD.test(o.from) &&
+      YMD.test(o.to) &&
+      o.from <= o.to
+    ) {
+      return { from: o.from, to: o.to }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+export function getStoredVinculosDateRange(): VinculosDateRangeYmd {
+  if (typeof window === 'undefined') {
+    const t = todayIsoDate()
+    return { from: t, to: t }
+  }
+  try {
+    const r = parseVinculosRange(localStorage.getItem(VINCULOS_COMPARE_RANGE_KEY))
+    if (r) {
+      // Filtro de vínculos: uma única data; legado com intervalo usa só o dia inicial.
+      const d = r.from
+      if (r.to !== d) {
+        return { from: d, to: d }
+      }
+      return r
+    }
     const s = localStorage.getItem(VINCULOS_COMPARE_DATE_KEY)
     if (s && YMD.test(s)) {
-      return s
+      return { from: s, to: s }
     }
   } catch {
     /* ignore */
   }
-  return todayIsoDate()
+  const t = todayIsoDate()
+  return { from: t, to: t }
 }
 
+export function setStoredVinculosDateRange(range: VinculosDateRangeYmd) {
+  if (
+    typeof window === 'undefined' ||
+    !YMD.test(range.from) ||
+    !YMD.test(range.to) ||
+    range.from > range.to
+  ) {
+    return
+  }
+  try {
+    localStorage.setItem(VINCULOS_COMPARE_RANGE_KEY, JSON.stringify(range))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** @deprecated use getStoredVinculosDateRange / setStoredVinculosDateRange */
+export function getStoredVinculosCompareDate(): string {
+  return getStoredVinculosDateRange().from
+}
+
+/** @deprecated use setStoredVinculosDateRange */
 export function setStoredVinculosCompareDate(ymd: string) {
-  if (typeof window === 'undefined' || !YMD.test(ymd)) {
+  if (!YMD.test(ymd)) {
     return
   }
-  try {
-    localStorage.setItem(VINCULOS_COMPARE_DATE_KEY, ymd)
-  } catch {
-    /* ignore */
-  }
-}
-
-export function getStoredVinculosFilterByDay(): boolean {
-  if (typeof window === 'undefined') {
-    return true
-  }
-  try {
-    const s = localStorage.getItem(VINCULOS_FILTER_BY_DAY_KEY)
-    if (s === '0' || s === 'false') {
-      return false
-    }
-  } catch {
-    /* ignore */
-  }
-  return true
-}
-
-export function setStoredVinculosFilterByDay(v: boolean) {
-  if (typeof window === 'undefined') {
-    return
-  }
-  try {
-    localStorage.setItem(VINCULOS_FILTER_BY_DAY_KEY, v ? '1' : '0')
-  } catch {
-    /* ignore */
-  }
+  setStoredVinculosDateRange({ from: ymd, to: ymd })
 }
 
 /** Logout: limpar run e filtros da tela de vínculos. */
@@ -122,7 +147,7 @@ export function clearReconcileClientState() {
   }
   try {
     localStorage.removeItem(VINCULOS_COMPARE_DATE_KEY)
-    localStorage.removeItem(VINCULOS_FILTER_BY_DAY_KEY)
+    localStorage.removeItem(VINCULOS_COMPARE_RANGE_KEY)
     localStorage.removeItem(CONCILIACAO_UNIT_KEY)
   } catch {
     /* ignore */

@@ -5,6 +5,7 @@ import {
   PaymentVinculoKind,
   SuggestionReason,
   SuggestionStatus,
+  TriageBucket,
 } from '../../generated/prisma/enums.js';
 import { HttpError } from '../erros/index.js';
 import {
@@ -14,6 +15,12 @@ import {
   nameMatchScore,
   recomputeMatchSuggestionFields,
 } from '../../services/suggestion-pair-scoring.js';
+import {
+  buildParticipatingInternalRecordIds,
+  findInternalRecordSubsetsForBankAmount,
+  hasBankOnlyInternalAggregatedSum,
+  loadInternalOnlyPoolForSumHints,
+} from '../../services/aggregated-sum-hint.js';
 import { normalizeCounterpartyName } from '../../lib/name-normalize.js';
 import {
   paymentVinculoHasDetails,
@@ -23,17 +30,35 @@ import { prisma } from '../../lib/prisma.js';
 
 const paramsSchema = z.object({ runId: z.string().min(1) });
 
-const querySchema = z.object({
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional(),
-  limit: z.coerce.number().int().min(1).max(2000).optional(),
-  statusFilter: z
-    .enum(['todos', 'pendente', 'conferido', 'pago'])
-    .optional()
-    .default('todos'),
-});
+const querySchema = z
+  .object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    /** Inclusivo; se omitido, usa só `date` (um dia). */
+    endDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    limit: z.coerce.number().int().min(1).max(2000).optional(),
+    statusFilter: z
+      .enum(['todos', 'pendente', 'conferido', 'pago'])
+      .optional()
+      .default('todos'),
+  })
+  .refine(
+    (q) => {
+      if (q.endDate != null && q.date == null) {
+        return false;
+      }
+      if (q.date != null && q.endDate != null && q.endDate < q.date) {
+        return false;
+      }
+      return true;
+    },
+    { message: 'date/endDate inválidos' },
+  );
 
 const confirmParamsSchema = z.object({
   runId: z.string().min(1),
@@ -61,11 +86,98 @@ export function isReasonConfirmable(reason: SuggestionReason): boolean {
   );
 }
 
-/** Janela [00:00, 24:00) em America/Sao_Paulo (offset fixo -03, sem horário de verão). */
-function saoPauloDayRange(ymd: string): { gte: Date; lt: Date } {
-  const gte = new Date(`${ymd}T00:00:00-03:00`);
-  const lt = new Date(gte.getTime() + 24 * 60 * 60 * 1000);
+/** [início, fim] inclusivos de calendário em America/Sao_Paulo. */
+function saoPauloInclusiveYmdRange(
+  fromYmd: string,
+  toYmd: string,
+): { gte: Date; lt: Date } {
+  const gte = new Date(`${fromYmd}T00:00:00-03:00`);
+  const toStart = new Date(`${toYmd}T00:00:00-03:00`);
+  const lt = new Date(toStart.getTime() + 24 * 60 * 60 * 1000);
   return { gte, lt };
+}
+
+/**
+ * Resumo (total / pendente / conferido / pago) com os mesmos filtros de
+ * `baseWhere` do Prisma, em uma passagem pelo banco (em vez de 4 counts).
+ */
+async function countMatchSuggestionSummary(
+  runId: string,
+  saoPauloDateRange: { gte: Date; lt: Date } | null,
+): Promise<{
+  total: number;
+  pendente: number;
+  conferido: number;
+  pago: number;
+}> {
+  if (saoPauloDateRange) {
+    const { gte, lt } = saoPauloDateRange;
+    const rows = await prisma.$queryRaw<
+      {
+        total: bigint;
+        pendente: bigint;
+        conferido: bigint;
+        pago: bigint;
+      }[]
+    >(Prisma.sql`
+      SELECT
+        COUNT(*)::bigint AS total,
+        COUNT(*) FILTER (WHERE ms.status = 'OPEN')::bigint AS pendente,
+        COUNT(*) FILTER (WHERE ms.status = 'APPROVED' AND ms."paidAt" IS NULL)::bigint AS conferido,
+        COUNT(*) FILTER (WHERE ms."paidAt" IS NOT NULL)::bigint AS pago
+      FROM "MatchSuggestion" ms
+      WHERE ms."runId" = ${runId}
+        AND ms.id IN (
+          SELECT sbl."suggestionId"
+          FROM "SuggestionBankLink" sbl
+          INNER JOIN "BankRecord" br ON br.id = sbl."bankRecordId"
+          WHERE
+            br."runId" = ${runId}
+            AND br."dueDate" IS NOT NULL
+            AND br."dueDate" >= ${gte}
+            AND br."dueDate" < ${lt}
+          UNION
+          SELECT sil."suggestionId"
+          FROM "SuggestionInternalLink" sil
+          INNER JOIN "InternalRecord" ir ON ir.id = sil."internalRecordId"
+          WHERE
+            ir."runId" = ${runId}
+            AND ir."dueDate" IS NOT NULL
+            AND ir."dueDate" >= ${gte}
+            AND ir."dueDate" < ${lt}
+        )
+    `);
+    const r = rows[0]!;
+    return {
+      total: Number(r.total),
+      pendente: Number(r.pendente),
+      conferido: Number(r.conferido),
+      pago: Number(r.pago),
+    };
+  }
+  const rows = await prisma.$queryRaw<
+    {
+      total: bigint;
+      pendente: bigint;
+      conferido: bigint;
+      pago: bigint;
+    }[]
+  >(Prisma.sql`
+    SELECT
+      COUNT(*)::bigint AS total,
+      COUNT(*) FILTER (WHERE ms.status = 'OPEN')::bigint AS pendente,
+      COUNT(*) FILTER (WHERE ms.status = 'APPROVED' AND ms."paidAt" IS NULL)::bigint AS conferido,
+      COUNT(*) FILTER (WHERE ms."paidAt" IS NOT NULL)::bigint AS pago
+    FROM "MatchSuggestion" ms
+    WHERE ms."runId" = ${runId}
+  `);
+  const r = rows[0]!;
+  return {
+    total: Number(r.total),
+    pendente: Number(r.pendente),
+    conferido: Number(r.conferido),
+    pago: Number(r.pago),
+  };
 }
 
 function decimalStr(v: Prisma.Decimal | null | undefined): string | null {
@@ -99,7 +211,8 @@ export async function listRunSuggestions(
 
   const dateWhere: Prisma.MatchSuggestionWhereInput | undefined = query.date
     ? (() => {
-        const { gte, lt } = saoPauloDayRange(query.date!);
+        const toY = query.endDate ?? query.date!;
+        const { gte, lt } = saoPauloInclusiveYmdRange(query.date, toY);
         return {
           OR: [
             {
@@ -138,21 +251,15 @@ export async function listRunSuggestions(
     listWhere.paidAt = { not: null };
   }
 
-  const [total, pendente, conferido, pago, suggestions] = await Promise.all([
-    prisma.matchSuggestion.count({ where: baseWhere }),
-    prisma.matchSuggestion.count({
-      where: { ...baseWhere, status: SuggestionStatus.OPEN },
-    }),
-    prisma.matchSuggestion.count({
-      where: {
-        ...baseWhere,
-        status: SuggestionStatus.APPROVED,
-        paidAt: null,
-      },
-    }),
-    prisma.matchSuggestion.count({
-      where: { ...baseWhere, paidAt: { not: null } },
-    }),
+  const saoPauloDateRange = query.date
+    ? (() => {
+        const toY = query.endDate ?? query.date!;
+        return saoPauloInclusiveYmdRange(query.date, toY);
+      })()
+    : null;
+
+  const [summary, suggestions] = await Promise.all([
+    countMatchSuggestionSummary(runId, saoPauloDateRange),
     prisma.matchSuggestion.findMany({
       where: listWhere,
       take,
@@ -168,6 +275,7 @@ export async function listRunSuggestions(
               select: {
                 id: true,
                 beneficiaryNameRaw: true,
+                beneficiaryNameNorm: true,
                 amount: true,
                 dueDate: true,
                 nossoNumero: true,
@@ -191,6 +299,7 @@ export async function listRunSuggestions(
       },
     }),
   ]);
+  const { total, pendente, conferido, pago } = summary;
 
   const revisaoCategoria: ReadonlySet<string> = new Set([
     SuggestionReason.FUZZY_NAME_MATCH,
@@ -222,10 +331,36 @@ export async function listRunSuggestions(
       AND: [{ normalizedName: norm }, { kind: vk }],
     });
   }
-  const vinculoRows =
+
+  /** Só banco, pendente: precisa do pool p/ dicas de soma e `participatingInternalRecordIds`. */
+  const openBankOnlyForAggregatedSum = suggestions.filter(
+    (s) =>
+      s.status === SuggestionStatus.OPEN &&
+      s.reason === SuggestionReason.NO_INTERNAL_MATCH &&
+      s.bankLinks[0]?.bankRecord != null,
+  );
+  const needsInternalPoolForSum = openBankOnlyForAggregatedSum.length > 0;
+  const [vinculoRows, internalPoolForSum] = await Promise.all([
     vinculoOr.length === 0
-      ? []
-      : await prisma.paymentVinculoName.findMany({
+      ? Promise.resolve(
+          [] as Awaited<
+            ReturnType<
+              typeof prisma.paymentVinculoName.findMany<{
+                select: {
+                  id: true
+                  kind: true
+                  normalizedName: true
+                  pixChave: true
+                  tedBanco: true
+                  tedAgencia: true
+                  tedConta: true
+                  tedCnpj: true
+                }
+              }>
+            >
+          >,
+        )
+      : prisma.paymentVinculoName.findMany({
           where: { OR: vinculoOr },
           select: {
             id: true,
@@ -237,13 +372,44 @@ export async function listRunSuggestions(
             tedConta: true,
             tedCnpj: true,
           },
-        });
+        }),
+    needsInternalPoolForSum
+      ? loadInternalOnlyPoolForSumHints(runId)
+      : Promise.resolve<Awaited<ReturnType<typeof loadInternalOnlyPoolForSumHints>>>([]),
+  ]);
   const vinculoByNormKind = new Map(
     vinculoRows.map((r) => [
       `${r.normalizedName}\t${r.kind}`,
       { id: r.id, hasDetails: paymentVinculoHasDetails(r) },
     ]),
   );
+
+  const participatingInternalRecordIds = buildParticipatingInternalRecordIds(
+    openBankOnlyForAggregatedSum.map((s) => ({
+      bank: s.bankLinks[0]!.bankRecord,
+    })),
+    internalPoolForSum,
+  );
+
+  const bankOnlySumHintByBankId = new Map<string, boolean>();
+  for (const s of openBankOnlyForAggregatedSum) {
+    const b = s.bankLinks[0]!.bankRecord;
+    if (bankOnlySumHintByBankId.has(b.id)) {
+      continue;
+    }
+    bankOnlySumHintByBankId.set(
+      b.id,
+      hasBankOnlyInternalAggregatedSum(
+        {
+          amount: b.amount,
+          dueDate: b.dueDate,
+          beneficiaryNameRaw: b.beneficiaryNameRaw,
+          beneficiaryNameNorm: b.beneficiaryNameNorm,
+        },
+        internalPoolForSum,
+      ),
+    );
+  }
 
   const items = suggestions.map((s) => {
     const banks = s.bankLinks.map((l) => l.bankRecord);
@@ -259,7 +425,19 @@ export async function listRunSuggestions(
       .join(' · ') || '—';
 
     const bankAmt = banks[0] ? decimalStr(banks[0].amount) : null;
-    const intAmt = inners[0] ? decimalStr(inners[0].amount) : null;
+    const intAmt = (() => {
+      if (inners.length === 0) {
+        return null;
+      }
+      if (inners.length === 1) {
+        return decimalStr(inners[0]!.amount);
+      }
+      const sum = inners.reduce(
+        (acc, r) => acc.add(r.amount),
+        new Prisma.Decimal(0),
+      );
+      return decimalStr(sum);
+    })();
     const amount = bankAmt ?? intAmt;
     const dueForCompare =
       isoDateOrNull(banks[0]?.dueDate ?? null) ??
@@ -274,6 +452,24 @@ export async function listRunSuggestions(
       const norm = normalizeCounterpartyName(inners[0].supplierNameRaw);
       if (norm) {
         vinculoRegistry = vinculoByNormKind.get(`${norm}\t${vk}`) ?? null;
+      }
+    }
+
+    let sumAggregationAvailable = false;
+    if (s.status === SuggestionStatus.OPEN) {
+      if (s.reason === SuggestionReason.NO_INTERNAL_MATCH) {
+        const b0 = banks[0];
+        if (b0) {
+          sumAggregationAvailable =
+            bankOnlySumHintByBankId.get(b0.id) ?? false;
+        }
+      } else if (s.reason === SuggestionReason.NO_BANK_MATCH) {
+        const i0 = inners[0];
+        if (i0) {
+          sumAggregationAvailable = participatingInternalRecordIds.has(
+            i0.id,
+          );
+        }
       }
     }
 
@@ -301,6 +497,18 @@ export async function listRunSuggestions(
       vinculoRegistry,
       /** Quando o financeiro marcou a conta como paga. */
       paidAt: s.paidAt ? s.paidAt.toISOString() : null,
+      /** 2+ lançamentos do outro lado (triagem) podem somar a este valor (banco↔ERP). */
+      sumAggregationAvailable,
+      aggregatedErpLines:
+        s.reason === SuggestionReason.AGGREGATED_CANDIDATE && inners.length > 0
+          ? inners.map((i) => ({
+              id: i.id,
+              supplierNameRaw: i.supplierNameRaw,
+              amount: decimalStr(i.amount) ?? '0',
+              dueDate: i.dueDate ? i.dueDate.toISOString() : null,
+              invoiceNumber: i.invoiceNumber,
+            }))
+          : undefined,
     };
   });
 
@@ -308,6 +516,7 @@ export async function listRunSuggestions(
     run,
     filter: {
       compareDate: query.date ?? null,
+      compareEndDate: query.endDate ?? query.date ?? null,
       statusFilter: query.statusFilter,
     },
     summary: {
@@ -1142,6 +1351,391 @@ export async function resolveMultipleCandidateAndConfirm(
       id: result.id,
       status: result.status,
       confirmedAt: result.confirmedAt?.toISOString() ?? null,
+    },
+  });
+}
+
+const bankOnlyInternalSumBody = z.object({
+  /** Agregado com muitas parcelas (ex.: dezenas de títulos no extrato). */
+  internalRecordIds: z.array(z.string().min(1)).min(2).max(500),
+});
+
+function moneyDecimalToCents(d: Prisma.Decimal): number {
+  return parseInt(d.mul(100).round().toString(), 10);
+}
+
+/**
+ * Soma de 2+ internos (sem par no banco) que batem no valor de um banco “só no extrato”.
+ */
+export async function getBankOnlyInternalSumCandidates(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
+  const s = await prisma.matchSuggestion.findFirst({
+    where: { id: suggestionId, runId, reason: SuggestionReason.NO_INTERNAL_MATCH },
+    include: {
+      bankLinks: { include: { bankRecord: { select: bankSelect } } },
+      internalLinks: true,
+    },
+  });
+  if (!s) {
+    return reply.status(200).send({
+      applicable: false,
+      targetAmount: null as string | null,
+      targetCents: null as number | null,
+      bankRecord: null,
+      bankRecordId: null as string | null,
+      maxCandidatesConsidered: 0,
+      manualPool: [] as unknown[],
+      combinations: [] as unknown[],
+    });
+  }
+  if (s.internalLinks.length > 0) {
+    return reply.status(200).send({
+      applicable: false,
+      targetAmount: null,
+      targetCents: null,
+      bankRecord: null,
+      bankRecordId: null,
+      maxCandidatesConsidered: 0,
+      manualPool: [],
+      combinations: [],
+    });
+  }
+  const bank = s.bankLinks[0]?.bankRecord;
+  if (!bank) {
+    throw new HttpError('Sugestão sem movimento bancário', 400);
+  }
+  const targetCents = moneyDecimalToCents(bank.amount);
+
+  const internalOpen = await prisma.matchSuggestion.findMany({
+    where: {
+      runId,
+      status: SuggestionStatus.OPEN,
+      triageBucket: TriageBucket.INTERNAL_ONLY,
+      bankLinks: { none: {} },
+    },
+    include: {
+      internalLinks: { include: { internalRecord: { select: internalSelect } } },
+    },
+  });
+  const pool: {
+    id: string;
+    suggestionId: string;
+    amount: Prisma.Decimal;
+    dueDate: Date | null;
+    supplierNameRaw: string;
+    supplierNameNorm: string | null;
+  }[] = [];
+  for (const ms of internalOpen) {
+    for (const sl of ms.internalLinks) {
+      if (!pool.some((p) => p.id === sl.internalRecordId)) {
+        const ir = sl.internalRecord;
+        pool.push({
+          id: sl.internalRecordId,
+          suggestionId: ms.id,
+          amount: ir.amount,
+          dueDate: ir.dueDate,
+          supplierNameRaw: ir.supplierNameRaw,
+          supplierNameNorm: ir.supplierNameNorm,
+        });
+      }
+    }
+  }
+  const bankDay = isoDateOrNull(bank.dueDate);
+  const bScore: {
+    amount: Prisma.Decimal;
+    dueDate: Date | null;
+    beneficiaryNameRaw: string;
+    beneficiaryNameNorm: string | null;
+  } = {
+    amount: bank.amount,
+    dueDate: bank.dueDate,
+    beneficiaryNameRaw: bank.beneficiaryNameRaw,
+    beneficiaryNameNorm: bank.beneficiaryNameNorm,
+  };
+  const rows = pool.map((p) => ({
+    id: p.id,
+    cents: moneyDecimalToCents(p.amount),
+    dueDate: p.dueDate,
+    supplierNameRaw: p.supplierNameRaw,
+    supplierNameNorm: p.supplierNameNorm,
+  }));
+  const {
+    combinations: subsetIdLists,
+    maxCandidatesConsidered,
+    totalEligible,
+    nameMatch: aggregatedNameMatch,
+  } = findInternalRecordSubsetsForBankAmount(
+    rows,
+    targetCents,
+    bankDay,
+    2,
+    3,
+    bScore,
+  );
+  const manualPool = pool.map((p) => ({
+    id: p.id,
+    supplierNameRaw: p.supplierNameRaw,
+    amount: p.amount.toString(),
+    dueDate: p.dueDate ? p.dueDate.toISOString() : null,
+    sourceSuggestionId: p.suggestionId,
+  }));
+  const canManualVincolo = manualPool.length >= 2;
+  if (totalEligible < 2) {
+    return reply.status(200).send({
+      applicable: canManualVincolo,
+      targetAmount: bank.amount.toString(),
+      targetCents,
+      bankRecord: {
+        id: bank.id,
+        beneficiaryNameRaw: bank.beneficiaryNameRaw,
+        amount: bank.amount.toString(),
+        dueDate: bank.dueDate ? bank.dueDate.toISOString() : null,
+      },
+      bankRecordId: bank.id,
+      maxCandidatesConsidered,
+      totalEligible,
+      nameMatch: null,
+      manualPool,
+      combinations: [] as unknown[],
+    });
+  }
+  if (subsetIdLists.length === 0) {
+    return reply.status(200).send({
+      applicable: canManualVincolo,
+      targetAmount: bank.amount.toString(),
+      targetCents,
+      bankRecord: {
+        id: bank.id,
+        beneficiaryNameRaw: bank.beneficiaryNameRaw,
+        amount: bank.amount.toString(),
+        dueDate: bank.dueDate ? bank.dueDate.toISOString() : null,
+      },
+      bankRecordId: bank.id,
+      maxCandidatesConsidered,
+      totalEligible,
+      nameMatch: null,
+      manualPool,
+      combinations: [] as unknown[],
+    });
+  }
+  const byIntId = new Map(
+    pool.map(
+      (p) =>
+        [
+          p.id,
+          {
+            id: p.id,
+            suggestionId: p.suggestionId,
+            cents: moneyDecimalToCents(p.amount),
+          },
+        ] as const,
+    ),
+  );
+  const combinations = await Promise.all(
+    subsetIdLists.map(async (ids) => {
+      const rows = await Promise.all(
+        ids.map((id) =>
+          prisma.internalRecord.findUniqueOrThrow({ where: { id } }),
+        ),
+      );
+      const nameScores = rows.map((r) =>
+        nameMatchScore(bScore, {
+          amount: r.amount,
+          dueDate: r.dueDate,
+          supplierNameRaw: r.supplierNameRaw,
+          supplierNameNorm: r.supplierNameNorm,
+        }),
+      );
+      const nameScore = Math.round(
+        nameScores.reduce((a, b) => a + b, 0) / nameScores.length,
+      );
+      return {
+        internalRecordIds: ids,
+        avgNameScore: nameScore,
+        internals: rows.map((r) => ({
+          id: r.id,
+          supplierNameRaw: r.supplierNameRaw,
+          amount: r.amount.toString(),
+          dueDate: r.dueDate ? r.dueDate.toISOString() : null,
+          invoiceNumber: r.invoiceNumber,
+          nameScore: nameMatchScore(bScore, {
+            amount: r.amount,
+            dueDate: r.dueDate,
+            supplierNameRaw: r.supplierNameRaw,
+            supplierNameNorm: r.supplierNameNorm,
+          }),
+          sourceSuggestionId: byIntId.get(r.id)!.suggestionId,
+        })),
+      };
+    }),
+  );
+  return reply.status(200).send({
+    applicable: true,
+    targetAmount: bank.amount.toString(),
+    targetCents,
+    maxCandidatesConsidered,
+    totalEligible,
+    nameMatch: aggregatedNameMatch,
+    bankRecordId: bank.id,
+    bankRecord: {
+      id: bank.id,
+      beneficiaryNameRaw: bank.beneficiaryNameRaw,
+      amount: bank.amount.toString(),
+      dueDate: bank.dueDate ? bank.dueDate.toISOString() : null,
+    },
+    manualPool,
+    combinations,
+  });
+}
+
+/**
+ * Vincula o banco a vários internos, remove sugestões “só interno” e aprova como agregado.
+ */
+export async function resolveBankOnlyInternalSum(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
+  const { internalRecordIds: rawIds } = bankOnlyInternalSumBody.parse(
+    request.body,
+  );
+  const internalRecordIds = [...new Set(rawIds)];
+  if (internalRecordIds.length < 2) {
+    throw new HttpError('Informe ao menos dois lançamentos internos no agrupamento.', 400);
+  }
+  const userId = (request as FastifyRequest & { user: { sub: string } }).user
+    .sub;
+
+  const s0 = await prisma.matchSuggestion.findFirst({
+    where: {
+      id: suggestionId,
+      runId,
+      reason: SuggestionReason.NO_INTERNAL_MATCH,
+    },
+    include: {
+      bankLinks: { include: { bankRecord: { select: bankSelect } } },
+      internalLinks: true,
+    },
+  });
+  if (!s0) {
+    throw new HttpError(
+      'Sugestão não encontrada ou o motivo não é “só banco (sem par interno)”.',
+      404,
+    );
+  }
+  if (s0.status !== SuggestionStatus.OPEN) {
+    throw new HttpError('Esta sugestão já foi processada (não está pendente).', 400);
+  }
+  if (s0.internalLinks.length > 0) {
+    throw new HttpError('Esta sugestão já possui lançamentos internos vinculados.', 400);
+  }
+  const bank = s0.bankLinks[0]?.bankRecord;
+  if (!bank) {
+    throw new HttpError('Sugestão sem movimento bancário', 400);
+  }
+  const internals = await prisma.internalRecord.findMany({
+    where: { id: { in: internalRecordIds }, runId },
+  });
+  if (internals.length !== internalRecordIds.length) {
+    throw new HttpError(
+      'Um ou mais lançamentos internos não existem ou não pertencem a esta execução.',
+      400,
+    );
+  }
+  const sum = internals.reduce(
+    (a, r) => a.add(r.amount),
+    new Prisma.Decimal(0),
+  );
+  if (!sum.equals(bank.amount)) {
+    throw new HttpError(
+      'A soma dos internos selecionados não coincide com o valor bancário.',
+      400,
+    );
+  }
+  const bScore = {
+    amount: bank.amount,
+    dueDate: bank.dueDate,
+    beneficiaryNameRaw: bank.beneficiaryNameRaw,
+    beneficiaryNameNorm: bank.beneficiaryNameNorm,
+  };
+  const nameScore = Math.round(
+    internals
+      .map((ir) =>
+        nameMatchScore(bScore, {
+          amount: ir.amount,
+          dueDate: ir.dueDate,
+          supplierNameRaw: ir.supplierNameRaw,
+          supplierNameNorm: ir.supplierNameNorm,
+        }),
+      )
+      .reduce((a, b) => a + b, 0) / internals.length,
+  );
+  const overall = Math.max(
+    0,
+    Math.min(100, Math.round((nameScore + 100 + 100) / 3)),
+  );
+  const toRemoveIds: string[] = [];
+  for (const intId of internalRecordIds) {
+    const sInt = await prisma.matchSuggestion.findFirst({
+      where: {
+        runId,
+        id: { not: suggestionId },
+        status: SuggestionStatus.OPEN,
+        triageBucket: TriageBucket.INTERNAL_ONLY,
+        bankLinks: { none: {} },
+        internalLinks: { some: { internalRecordId: intId } },
+      },
+    });
+    if (!sInt) {
+      throw new HttpError(
+        'Um dos internos selecionados não está em triagem “só interno” (sem par banco) pendente, ou foi alterado.',
+        400,
+      );
+    }
+    toRemoveIds.push(sInt.id);
+  }
+  if (new Set(toRemoveIds).size !== toRemoveIds.length) {
+    throw new HttpError(
+      'A combinação inclui internos vinculados de forma inesperada à mesma sugestão; recarregue a lista.',
+      400,
+    );
+  }
+  const now = new Date();
+  const updated = await prisma.$transaction(async (tx) => {
+    if (toRemoveIds.length > 0) {
+      await tx.matchSuggestion.deleteMany({ where: { id: { in: toRemoveIds } } });
+    }
+    for (const intId of internalRecordIds) {
+      await tx.suggestionInternalLink.create({
+        data: { suggestionId, internalRecordId: intId },
+      });
+    }
+    return tx.matchSuggestion.update({
+      where: { id: suggestionId },
+      data: {
+        status: SuggestionStatus.APPROVED,
+        reviewedById: userId,
+        confirmedAt: now,
+        triageBucket: TriageBucket.VERIFY,
+        reason: SuggestionReason.AGGREGATED_CANDIDATE,
+        scorePercent: overall,
+        nameScore,
+        amountScore: 100,
+        dateScore: 100,
+        amountDifference: null,
+        explanation:
+          'Vínculo agregado: total dos lançamentos internos = valor do banco (sem 1-1 com mesmo título).',
+      },
+    });
+  });
+  return reply.status(200).send({
+    suggestion: {
+      id: updated.id,
+      status: updated.status,
+      confirmedAt: updated.confirmedAt?.toISOString() ?? null,
     },
   });
 }

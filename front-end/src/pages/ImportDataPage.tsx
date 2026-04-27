@@ -27,13 +27,6 @@ import {
   PaginationItem,
 } from '@/components/ui/pagination'
 import { Progress } from '@/components/ui/progress'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import {
   Table,
@@ -381,6 +374,39 @@ function RowList({
   )
 }
 
+const UNITS: readonly ConciliationUnit[] = ['PEDERTRACTOR', 'TRACTOR'] as const
+
+function CompanyUnitPicker({
+  label,
+  value,
+  onSelect,
+}: {
+  label: string
+  value: ConciliationUnit | null
+  onSelect: (u: ConciliationUnit) => void
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      <div className="flex max-w-md gap-2">
+        {UNITS.map((u) => (
+          <Button
+            key={u}
+            type="button"
+            variant={value === u ? 'default' : 'outline'}
+            className="min-w-0 flex-1"
+            onClick={() => {
+              if (value !== u) onSelect(u)
+            }}
+          >
+            {u}
+          </Button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function ImportDataPage() {
   const queryClient = useQueryClient()
   const [importUnit, setImportUnit] = useState<ConciliationUnit | null>(() =>
@@ -642,7 +668,7 @@ export function ImportDataPage() {
       <div>
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Importar Dados</h1>
-          <p className="text-muted-foreground mt-1 max-w-2xl text-pretty text-sm">
+          <p className="text-muted-foreground mt-1 w-full text-pretty text-sm">
             Envie e confirme a planilha do banco e a do sistema interno (Epron). Escolha a <span className="text-foreground font-medium">empresa</span> antes de enviar as
             planilhas. Quando as duas
             estiverem concluídas, use <span className="text-foreground font-medium">Gerar vínculo</span>{' '}
@@ -651,50 +677,20 @@ export function ImportDataPage() {
           </p>
         </div>
         {importUnit == null ? (
-          <div className="max-w-sm space-y-2">
-            <Label htmlFor="import-unit">Empresa (obrigatório)</Label>
-            <Select
-              onValueChange={(v) => handleImportUnitChange(v as ConciliationUnit)}
-            >
-              <SelectTrigger id="import-unit" className="w-full">
-                <SelectValue placeholder="Selecione PEDERTRACTOR ou TRACTOR" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="PEDERTRACTOR">PEDERTRACTOR</SelectItem>
-                <SelectItem value="TRACTOR">TRACTOR</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-muted-foreground text-xs">
-              Sem a empresa, não é possível enviar planilhas nem gerar vínculo.
-            </p>
-          </div>
+          <CompanyUnitPicker
+            label="Empresa (obrigatório)"
+            value={null}
+            onSelect={handleImportUnitChange}
+          />
         ) : runLoading || !runId ? (
           <p className="text-muted-foreground text-sm">Preparando execução de conciliação…</p>
         ) : (
           <div className="space-y-6">
-            <div className="max-w-sm space-y-2">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                <div className="space-y-1.5">
-                  <Label htmlFor="import-unit-2">Empresa</Label>
-                  <Select
-                    value={importUnit}
-                    onValueChange={(v) => handleImportUnitChange(v as ConciliationUnit)}
-                  >
-                    <SelectTrigger id="import-unit-2" className="w-full sm:min-w-[14rem]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="PEDERTRACTOR">PEDERTRACTOR</SelectItem>
-                      <SelectItem value="TRACTOR">TRACTOR</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <p className="text-muted-foreground text-xs">
-                Trocar a empresa apaga a seleção atual de arquivos nesta página e inicia outra
-                execução.
-              </p>
-            </div>
+            <CompanyUnitPicker
+              label="Empresa"
+              value={importUnit}
+              onSelect={handleImportUnitChange}
+            />
             <div className="grid gap-4 md:grid-cols-2">
               <DropCard
                 title="Planilha do banco"

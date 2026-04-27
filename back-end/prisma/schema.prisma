@@ -327,6 +327,10 @@ model MatchSuggestion {
 
   @@index([runId, triageBucket])
   @@index([runId, status])
+  /// Cobre ordenação da lista (triage → status → score) no escopo do run.
+  @@index([runId, triageBucket, status, scorePercent])
+  /// Filtro “abertos só interno” (triagem) em `loadInternalOnlyPoolForSumHints`.
+  @@index([runId, status, triageBucket])
   @@index([status])
   @@index([scorePercent])
   @@index([reason])
