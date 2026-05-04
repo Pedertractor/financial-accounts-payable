@@ -1,0 +1,25 @@
+info:
+  name: update user
+  type: http
+  seq: 4
+
+http:
+  method: PUT
+  url: "{{HOST}}/users/{{USER_ID}}"
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Novo nome",
+        "role": "FINANCIAL",
+        "password": "novaSenha123"
+      }
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

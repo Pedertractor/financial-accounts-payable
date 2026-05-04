@@ -1,0 +1,12 @@
+services:
+  frontend-finance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '3134:80'
+    networks:
+      - finance-network
+
+networks:
+  finance-network:

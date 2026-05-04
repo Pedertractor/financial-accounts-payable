@@ -1,0 +1,47 @@
+info:
+  name: login
+  type: http
+  seq: 7
+
+http:
+  method: POST
+  url: "{{HOST}}/users/login"
+  body:
+    type: json
+    data: |-
+      {
+        "cardNumber": "0000001",
+        "unit": "PEDERTRACTOR",
+        "password": "suaSenhaAqui"
+      }
+  auth:
+    type: none
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body && res.body.token) {
+          bru.setVar("TOKEN", res.body.token);
+        }
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("se login completo, retorna token", function () {
+          if (res.body && res.body.firstLoginRequired === false) {
+            expect(res.body).to.have.property("token");
+            expect(res.body.token).to.be.a("string");
+          }
+        });
+
+docs: |-
+  Autenticação pública. Se `firstLoginRequired: true`, o usuário precisa de `first-password` antes de receber `token`.
+  O script `after-response` grava o token em variável de **execução** `TOKEN` (use também no environment para `{{TOKEN}}`).
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

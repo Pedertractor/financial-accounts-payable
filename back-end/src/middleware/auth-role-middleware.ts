@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { $Enums } from '../generated/prisma/client';
+import { $Enums } from '../generated/prisma/client.js';
 
 export function roleMiddleware(requiredRole: $Enums.UserRole[]) {
   return async (request: FastifyRequest, reply: FastifyReply) => {

@@ -1,0 +1,44 @@
+info:
+  name: upload bank
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/uploads/bank"
+  body:
+    type: multipart-form
+    data:
+      - name: file
+        type: file
+        value: "{{FILE_BANK_PATH}}"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        if (res.body && res.body.fileUploadId) {
+          bru.setVar("FILE_UPLOAD_ID", res.body.fileUploadId);
+        }
+    - type: tests
+      code: |-
+        test("deve retornar 201 ao receber o arquivo", function () {
+          expect(res.status).to.equal(201);
+        });
+        test("deve conter fileUploadId", function () {
+          expect(res.body).to.have.property("fileUploadId");
+        });
+
+docs: |-
+  Multipart: campo **`file`** (planilha banco: .xlsx, .xls, .csv).
+  Ajuste `FILE_BANK_PATH` no environment com o caminho absoluto do arquivo.
+  O processamento ocorre em background; use **get upload status** com o `fileUploadId` retornado.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

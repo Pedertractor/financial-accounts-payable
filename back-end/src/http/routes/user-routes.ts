@@ -4,12 +4,14 @@ import { UserRole } from '../../generated/prisma/enums.js';
 import { authMiddleware } from '../../middleware/auth-middleware.js';
 import { roleMiddleware } from '../../middleware/auth-role-middleware.js';
 import {
+  activateUser,
   completeFirstPasswordUser,
   deactivateUser,
   getMeUser,
   listUsers,
   loginUser,
   registerUser,
+  resetFirstLoginUser,
   updateUser,
 } from '../controllers/user-controller.js';
 
@@ -29,5 +31,15 @@ export async function userRoutes(app: FastifyInstance) {
     '/:id/deactivate',
     { preHandler: adminOrResponsiblePreHandler },
     deactivateUser,
+  );
+  app.patch(
+    '/:id/activate',
+    { preHandler: adminOrResponsiblePreHandler },
+    activateUser,
+  );
+  app.patch(
+    '/:id/reset-first-login',
+    { preHandler: adminOrResponsiblePreHandler },
+    resetFirstLoginUser,
   );
 }

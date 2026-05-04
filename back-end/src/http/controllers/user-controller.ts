@@ -156,3 +156,41 @@ export async function deactivateUser(
 
   return reply.status(200).send({ user });
 }
+
+export async function activateUser(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const paramsSchema = z.object({
+    id: z.string().min(1),
+  });
+
+  const { id } = paramsSchema.parse(request.params);
+
+  const usersService = new UserService();
+  const user = await usersService.activate({
+    userId: id,
+    actorUserId: request.user.sub,
+  });
+
+  return reply.status(200).send({ user });
+}
+
+export async function resetFirstLoginUser(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const paramsSchema = z.object({
+    id: z.string().min(1),
+  });
+
+  const { id } = paramsSchema.parse(request.params);
+
+  const usersService = new UserService();
+  const user = await usersService.resetFirstAccess({
+    userId: id,
+    actorUserId: request.user.sub,
+  });
+
+  return reply.status(200).send({ user });
+}

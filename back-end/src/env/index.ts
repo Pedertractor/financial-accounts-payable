@@ -9,6 +9,10 @@ const envSchema = z.object({
   APPNAME: z.string(),
   APPKEY: z.string(),
   API_PEDERTRACTOR_URL: z.string(),
+  /** Diretório absoluto ou relativo à cwd para arquivos enviados na importação */
+  UPLOAD_DIR: z.string().default('./uploads'),
+  /** Tamanho máximo do arquivo (bytes). Padrão 10 MB. */
+  MAX_UPLOAD_BYTES: z.coerce.number().int().default(10 * 1024 * 1024),
 });
 
 const _env = envSchema.safeParse(process.env);

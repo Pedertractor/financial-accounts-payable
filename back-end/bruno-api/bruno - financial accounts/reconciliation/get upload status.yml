@@ -1,0 +1,33 @@
+info:
+  name: get upload status
+  type: http
+  seq: 5
+
+http:
+  method: GET
+  url: "{{HOST}}/reconciliation/uploads/{{FILE_UPLOAD_ID}}"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("deve conter fileUpload", function () {
+          expect(res.body).to.have.property("fileUpload");
+        });
+
+docs: |-
+  Polling do processamento após **upload bank** ou **upload internal**.
+  Defina `FILE_UPLOAD_ID` (o script dos uploads grava em variável de runtime; copie para o environment se necessário).
+  Estados finais: `COMPLETED`, `FAILED`, `PARTIAL_SUCCESS`.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

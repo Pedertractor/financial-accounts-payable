@@ -1,12 +1,15 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
+import fastifyMultipart from '@fastify/multipart';
 import { env } from './env/index.js';
 import { ZodError } from 'zod';
 import { HttpError } from './http/erros/index.js';
 import { mainRoutes } from './http/routes/main.js';
 
-export const app = Fastify();
+const bodyLimitBytes = Math.max(env.MAX_UPLOAD_BYTES * 2, 12 * 1024 * 1024);
+
+export const app = Fastify({ bodyLimit: bodyLimitBytes });
 
 app.register(cors, {
   origin: true,
@@ -16,6 +19,12 @@ app.register(cors, {
 
 app.register(jwt, {
   secret: env.JWT_SECRET,
+});
+
+app.register(fastifyMultipart, {
+  limits: {
+    fileSize: env.MAX_UPLOAD_BYTES,
+  },
 });
 
 app.register(mainRoutes, { prefix: '/api' });

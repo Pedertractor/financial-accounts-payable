@@ -1,0 +1,833 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { extname, join, resolve } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
+import * as XLSX from 'xlsx';
+import { Prisma } from '../generated/prisma/client.js';
+import { RunStatus, SourceType, UploadStatus, UnitType } from '../generated/prisma/enums.js';
+import { env } from '../env/index.js';
+import { HttpError } from '../http/erros/index.js';
+import {
+  BANK_COLUMN_SYNONYMS,
+  type BankImportField,
+  detectHeaderRowAndColumns,
+  INTERNAL_COLUMN_SYNONYMS,
+  type InternalImportField,
+  preferInternalSupplierNameColumn,
+} from '../lib/excel/column-maps.js';
+import { generateMatchSuggestionsForRun } from './reconciliation-matcher.js';
+import {
+  isRowEmpty,
+  parseBrAmount,
+  parseFlexibleDate,
+} from '../lib/excel/spreadsheet-helpers.js';
+import { normalizeCounterpartyName } from '../lib/name-normalize.js';
+import { prisma } from '../lib/prisma.js';
+import { BankRecordPrismaRepository } from '../repositories/prisma/bank-record-repository.js';
+import { FileUploadPrismaRepository } from '../repositories/prisma/file-upload-repository.js';
+import { InternalRecordPrismaRepository } from '../repositories/prisma/internal-record-repository.js';
+import { ReconciliationRunPrismaRepository } from '../repositories/prisma/reconciliation-run-repository.js';
+
+const PARSER_VERSION = 'excel-mvp-1';
+const MAX_SHEET_ROWS = 100_000;
+const PROGRESS_EVERY = 200;
+
+const UPLOAD_DIR_ABS = resolve(process.cwd(), env.UPLOAD_DIR);
+
+function getCell(row: unknown[], col: number | undefined): unknown {
+  if (col === undefined) return null;
+  return row[col] ?? null;
+}
+
+function toOptionalString(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
+
+function toOptionalInt(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v);
+  const s = String(v).replace(/\D/g, '');
+  if (!s) return null;
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
+type Matrix = unknown[][];
+
+function sheetToMatrix(worksheet: XLSX.WorkSheet): Matrix {
+  const m = XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
+    defval: null,
+    raw: true,
+  }) as unknown[][];
+  if (!m.length) return [[]];
+  if (m.length > MAX_SHEET_ROWS) {
+    return m.slice(0, MAX_SHEET_ROWS);
+  }
+  return m;
+}
+
+export class FileImportService {
+  private readonly runRepo = new ReconciliationRunPrismaRepository(prisma);
+  private readonly uploadRepo = new FileUploadPrismaRepository(prisma);
+  private readonly bankRepo = new BankRecordPrismaRepository(prisma);
+  private readonly internalRepo = new InternalRecordPrismaRepository(prisma);
+
+  async createRun(params: {
+    userId: string;
+    unit: UnitType;
+    title?: string;
+    referenceStartDate?: string | null;
+    referenceEndDate?: string | null;
+  }) {
+    const { userId, unit, title, referenceStartDate, referenceEndDate } = params;
+    return this.runRepo.create({
+      unit,
+      title: title?.trim() || 'Conciliação',
+      referenceStartDate: referenceStartDate
+        ? new Date(referenceStartDate)
+        : null,
+      referenceEndDate: referenceEndDate
+        ? new Date(referenceEndDate)
+        : null,
+      status: 'OPEN',
+      createdBy: { connect: { id: userId } },
+    });
+  }
+
+  async getRunOrThrow(runId: string) {
+    const run = await this.runRepo.findById(runId);
+    if (!run) {
+      throw new HttpError('Execução de conciliação não encontrada', 404);
+    }
+    return run;
+  }
+
+  async getUploadOrThrow(id: string) {
+    const row = await this.uploadRepo.findById(id);
+    if (!row) {
+      throw new HttpError('Upload não encontrado', 404);
+    }
+    return row;
+  }
+
+  async listRecentFinishedUploads(limit: number) {
+    const rows = await this.uploadRepo.listRecentFinished({ limit });
+    return rows.map((u) => this.toUploadStatusDto(u));
+  }
+
+  toUploadStatusDto(
+    u: Awaited<ReturnType<FileUploadPrismaRepository['findById']>>,
+  ) {
+    if (!u) throw new Error('expected upload');
+    const done =
+      u.status === UploadStatus.COMPLETED ||
+      u.status === UploadStatus.PARTIAL_SUCCESS;
+    const total = u.totalRowsDetected ?? 0;
+    const read = u.totalRowsRead ?? 0;
+    let progressPercent = 0;
+    if (done) {
+      progressPercent = 100;
+    } else if (u.status === UploadStatus.FAILED) {
+      progressPercent = 0;
+    } else if (u.status === UploadStatus.CANCELLED) {
+      progressPercent = 0;
+    } else if (u.status === UploadStatus.AWAITING_CONFIRM) {
+      progressPercent = 100;
+    } else if (total > 0) {
+      progressPercent = Math.min(99, Math.round((read / total) * 100));
+    }
+    const w = u.warningDetailsJson as
+      | { samples?: { row: number; text: string }[] }
+      | null
+      | undefined;
+    return {
+      id: u.id,
+      runId: u.runId,
+      sourceType: u.sourceType,
+      status: u.status,
+      originalFileName: u.originalFileName,
+      fileSizeBytes: u.fileSizeBytes,
+      totalRowsDetected: u.totalRowsDetected,
+      totalRowsRead: u.totalRowsRead,
+      totalRowsImported: u.totalRowsImported,
+      totalRowsRejected: u.totalRowsRejected,
+      totalRowsWithWarnings: u.totalRowsWithWarnings,
+      errorMessage: u.errorMessage,
+      progressPercent,
+      parsingStartedAt: u.parsingStartedAt,
+      finishedAt: u.finishedAt,
+      needsUserConfirmation: u.status === UploadStatus.AWAITING_CONFIRM,
+      warningDetails: w?.samples
+        ? { samples: w.samples }
+        : null,
+    };
+  }
+
+  async saveUploadAndQueueProcess(params: {
+    runId: string;
+    userId: string;
+    sourceType: SourceType;
+    buffer: Buffer;
+    originalFileName: string;
+    mimetype: string;
+  }): Promise<{ fileUploadId: string }> {
+    await this.getRunOrThrow(params.runId);
+    await this.uploadRepo.cancelAwaitingStagedByRunIdAndSource(
+      params.runId,
+      params.sourceType,
+    );
+    if (params.buffer.length > env.MAX_UPLOAD_BYTES) {
+      throw new HttpError(
+        `Arquivo excede o tamanho máximo de ${env.MAX_UPLOAD_BYTES} bytes`,
+        413,
+      );
+    }
+    const ext = (extname(params.originalFileName) || '.xlsx').toLowerCase();
+    if (!['.xlsx', '.xls', '.csv'].includes(ext)) {
+      throw new HttpError(
+        'Formato inválido. Use planilha .xlsx, .xls ou .csv',
+        400,
+      );
+    }
+    const fileId = randomUUID();
+    const stored = `${fileId}${ext}`;
+    const storagePath = join(UPLOAD_DIR_ABS, stored);
+    const fileHash = createHash('sha256').update(params.buffer).digest('hex');
+
+    await writeFile(storagePath, params.buffer);
+
+    const fileUpload = await this.uploadRepo.create({
+      run: { connect: { id: params.runId } },
+      uploadedBy: { connect: { id: params.userId } },
+      sourceType: params.sourceType,
+      status: UploadStatus.RECEIVED,
+      originalFileName: params.originalFileName,
+      storedFileName: stored,
+      storagePath,
+      mimeType: params.mimetype,
+      fileExtension: ext.replace(/^\./, '') || 'xlsx',
+      fileSizeBytes: params.buffer.length,
+      fileHash,
+      startedAt: new Date(),
+      parserVersion: PARSER_VERSION,
+    });
+
+    void this.runProcessInBackground(fileUpload.id);
+    return { fileUploadId: fileUpload.id };
+  }
+
+  private async runProcessInBackground(fileUploadId: string) {
+    await setImmediate();
+    try {
+      await this.processFileUpload(fileUploadId);
+    } catch (e) {
+      console.error('processFileUpload', fileUploadId, e);
+      const msg = e instanceof Error ? e.message : 'Erro ao importar';
+      try {
+        await this.uploadRepo.updateById(fileUploadId, {
+          status: UploadStatus.FAILED,
+          errorMessage: msg,
+          finishedAt: new Date(),
+        });
+      } catch (err) {
+        console.error('Falha ao marcar upload como FAILED', err);
+      }
+    }
+  }
+
+  private async processFileUpload(id: string) {
+    const upload = await this.uploadRepo.findById(id);
+    if (!upload?.storagePath) {
+      throw new Error('Upload inválido');
+    }
+    const t0 = Date.now();
+    await this.uploadRepo.updateById(id, {
+      status: UploadStatus.PARSING,
+      parsingStartedAt: new Date(),
+    });
+
+    const absPath = upload.storagePath.startsWith('.')
+      ? join(process.cwd(), upload.storagePath)
+      : upload.storagePath;
+
+    const buffer = await readFile(absPath);
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) {
+      await this.fail(id, t0, 'A planilha não contém abas.');
+      return;
+    }
+    const sheet = wb.Sheets[sheetName];
+    const matrix = sheetToMatrix(sheet);
+    const workbookSheetCount = wb.SheetNames.length;
+    const selectedSheetName = sheetName;
+
+    await this.uploadRepo.updateById(id, {
+      workbookSheetCount: workbookSheetCount,
+      selectedSheetName,
+    });
+
+    if (upload.sourceType === 'BANK') {
+      await this.importBank(
+        id,
+        upload.runId!,
+        matrix,
+        t0,
+      );
+    } else {
+      await this.importInternal(
+        id,
+        upload.runId!,
+        matrix,
+        t0,
+      );
+    }
+  }
+
+  private async fail(id: string, t0: number, message: string) {
+    await this.uploadRepo.updateById(id, {
+      status: UploadStatus.FAILED,
+      errorMessage: message,
+      errorDetailsJson: { message },
+      totalDurationMs: Date.now() - t0,
+      finishedAt: new Date(),
+    });
+  }
+
+  async confirmStagedImport(fileUploadId: string) {
+    const upload = await this.getUploadOrThrow(fileUploadId);
+    if (upload.status !== UploadStatus.AWAITING_CONFIRM) {
+      throw new HttpError('Nada para confirmar neste upload ou já foi processado.', 400);
+    }
+    if (!upload.storagePath || !upload.runId) {
+      throw new HttpError('Dados de arquivo ausentes; faça o upload de novo.', 400);
+    }
+    const t0 = Date.now();
+    const absPath = upload.storagePath.startsWith('.')
+      ? join(process.cwd(), upload.storagePath)
+      : upload.storagePath;
+    const buffer = await readFile(absPath);
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const sheetName = upload.selectedSheetName || wb.SheetNames[0];
+    if (!sheetName) {
+      throw new HttpError('Planilha vazia ou corrompida', 400);
+    }
+    const sheet = wb.Sheets[sheetName];
+    const matrix = sheetToMatrix(sheet);
+    if (upload.sourceType === 'BANK') {
+      await this.importBank(
+        fileUploadId,
+        upload.runId,
+        matrix,
+        t0,
+        'commit',
+      );
+    } else {
+      await this.importInternal(
+        fileUploadId,
+        upload.runId,
+        matrix,
+        t0,
+        'commit',
+      );
+    }
+  }
+
+  async cancelStagedImport(fileUploadId: string) {
+    const u = await this.getUploadOrThrow(fileUploadId);
+    if (u.status !== UploadStatus.AWAITING_CONFIRM) {
+      throw new HttpError(
+        'Apenas importações aguardando confirmação podem ser descartadas desta forma.',
+        400,
+      );
+    }
+    await this.uploadRepo.updateById(fileUploadId, {
+      status: UploadStatus.CANCELLED,
+      errorMessage:
+        'Importação descartada. Nenhum dado deste arquivo foi salvo no banco de conciliação.',
+    });
+  }
+
+  /**
+   * Remove do banco os lançamentos deste upload e marca o arquivo como cancelado.
+   * Se ainda estiver aguardando confirmação, equivale a descartar a importação (sem registros a apagar).
+   */
+  async removeImportDataForUpload(fileUploadId: string) {
+    const u = await this.getUploadOrThrow(fileUploadId);
+    if (u.status === UploadStatus.AWAITING_CONFIRM) {
+      await this.cancelStagedImport(fileUploadId);
+      return;
+    }
+    if (
+      u.status !== UploadStatus.COMPLETED &&
+      u.status !== UploadStatus.PARTIAL_SUCCESS
+    ) {
+      throw new HttpError(
+        'Nada para remover: a importação ainda está em andamento, falhou ou já foi removida.',
+        400,
+      );
+    }
+    await prisma.$transaction(async (tx) => {
+      if (u.sourceType === 'BANK') {
+        const repo = new BankRecordPrismaRepository(tx);
+        await repo.deleteManyByFileUploadId(fileUploadId);
+      } else {
+        const repo = new InternalRecordPrismaRepository(tx);
+        await repo.deleteManyByFileUploadId(fileUploadId);
+      }
+      const upload = new FileUploadPrismaRepository(tx);
+      await upload.updateById(fileUploadId, {
+        status: UploadStatus.CANCELLED,
+        errorMessage: 'Dados importados removidos pelo usuário.',
+      });
+    });
+  }
+
+  private async importBank(
+    fileUploadId: string,
+    runId: string,
+    matrix: Matrix,
+    t0: number,
+    partialMode: 'stage' | 'commit' = 'stage',
+  ) {
+    const tParseStart = Date.now();
+    const det = detectHeaderRowAndColumns(
+      matrix,
+      BANK_COLUMN_SYNONYMS,
+      2,
+    );
+    if (!det) {
+      await this.fail(
+        fileUploadId,
+        t0,
+        'Não foi possível localizar a linha de cabeçalho ou colunas obrigatórias (favorecido/fornecedor e valor). Ajuste os títulos da planilha ou o formato.',
+      );
+      return;
+    }
+    const { headerRowIndex, columnByField } = det;
+    if (
+      columnByField.beneficiaryNameRaw === undefined ||
+      columnByField.amount === undefined
+    ) {
+      await this.fail(
+        fileUploadId,
+        t0,
+        'Colunas obrigatórias faltando: identifique colunas de fornecedor/favorecido e valor.',
+      );
+      return;
+    }
+
+    await this.uploadRepo.updateById(fileUploadId, {
+      headerRowIndex,
+      detectedColumnsJson: { bank: columnByField },
+    });
+
+    const dataStart = headerRowIndex + 1;
+    const maxCol = Math.max(
+      0,
+      ...Object.values(columnByField).map((c) => c!),
+    ) + 1;
+
+    let dataRows: unknown[][] = [];
+    for (let r = dataStart; r < matrix.length; r++) {
+      const row = matrix[r];
+      if (!row) continue;
+      if (isRowEmpty(row as unknown[], maxCol + 2)) continue;
+      dataRows.push(row as unknown[]);
+    }
+
+    const totalRows = dataRows.length;
+    if (totalRows === 0) {
+      await this.fail(fileUploadId, t0, 'Nenhuma linha de dado após o cabeçalho.');
+      return;
+    }
+
+    const tParseEnd = Date.now();
+    const parseDurationMs = tParseEnd - tParseStart;
+
+    await this.uploadRepo.updateById(fileUploadId, {
+      status: UploadStatus.IMPORTING,
+      totalRowsDetected: totalRows,
+      parsingFinishedAt: new Date(),
+    });
+
+    const tImport = Date.now();
+
+    const f = columnByField as Record<BankImportField, number | undefined>;
+    const toCreate: Prisma.BankRecordCreateManyInput[] = [];
+    const warnings: { row: number; text: string }[] = [];
+    let rejected = 0;
+    let read = 0;
+
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i] as unknown[];
+      const excelRow = dataStart + i + 1;
+      read++;
+      const amount = parseBrAmount(getCell(row, f.amount));
+      const nameRaw = toOptionalString(getCell(row, f.beneficiaryNameRaw)) ?? '';
+      if (!nameRaw) {
+        rejected++;
+        if (warnings.length < 30) {
+          warnings.push({ row: excelRow, text: 'Nome do favorecido vazio' });
+        }
+        if (read % PROGRESS_EVERY === 0) {
+          await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+        }
+        continue;
+      }
+      if (amount === null) {
+        rejected++;
+        if (warnings.length < 30) {
+          warnings.push({ row: excelRow, text: 'Valor inválido ou vazio' });
+        }
+        if (read % PROGRESS_EVERY === 0) {
+          await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+        }
+        continue;
+      }
+      const norm = normalizeCounterpartyName(nameRaw);
+      toCreate.push({
+        runId,
+        fileUploadId,
+        rowNumber: excelRow,
+        dueDate: parseFlexibleDate(getCell(row, f.dueDate)),
+        beneficiaryNameRaw: nameRaw,
+        beneficiaryNameNorm: norm,
+        beneficiaryNameCanon: null,
+        payerNameRaw: toOptionalString(getCell(row, f.payerNameRaw)),
+        nossoNumero: toOptionalString(getCell(row, f.nossoNumero)),
+        amount,
+      });
+      if (read % PROGRESS_EVERY === 0) {
+        await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+      }
+    }
+
+    const importMs = Date.now() - tImport;
+    const hasWarn = warnings.length > 0 || rejected > 0;
+    if (hasWarn) {
+      if (toCreate.length === 0) {
+        await this.fail(
+          fileUploadId,
+          t0,
+          'Nenhuma linha válida para importar. Corrija a planilha e tente de novo.',
+        );
+        return;
+      }
+      if (partialMode === 'stage') {
+        const now = new Date();
+        await this.uploadRepo.updateById(fileUploadId, {
+          status: UploadStatus.AWAITING_CONFIRM,
+          importDurationMs: importMs,
+          parseDurationMs,
+          totalRowsRead: read,
+          totalRowsImported: toCreate.length,
+          totalRowsRejected: rejected,
+          totalRowsWithWarnings: warnings.length,
+          warningDetailsJson: { samples: warnings },
+          totalDurationMs: Date.now() - t0,
+          finishedAt: now,
+        });
+        return;
+      }
+      await this.bankRepo.deleteManyByFileUploadId(fileUploadId);
+      if (toCreate.length) {
+        await this.bankRepo.createManyChunked(toCreate);
+      }
+      const nowC = new Date();
+      await this.uploadRepo.updateById(fileUploadId, {
+        status: UploadStatus.PARTIAL_SUCCESS,
+        importDurationMs: importMs,
+        parseDurationMs,
+        totalRowsRead: read,
+        totalRowsImported: toCreate.length,
+        totalRowsRejected: rejected,
+        totalRowsWithWarnings: warnings.length,
+        warningDetailsJson: { samples: warnings },
+        totalDurationMs: Date.now() - t0,
+        importedAt: nowC,
+        finishedAt: nowC,
+      });
+      return;
+    }
+
+    await this.bankRepo.deleteManyByFileUploadId(fileUploadId);
+    if (toCreate.length) {
+      await this.bankRepo.createManyChunked(toCreate);
+    }
+    const nowF = new Date();
+    await this.uploadRepo.updateById(fileUploadId, {
+      status: UploadStatus.COMPLETED,
+      importDurationMs: importMs,
+      parseDurationMs,
+      totalRowsRead: read,
+      totalRowsImported: toCreate.length,
+      totalRowsRejected: 0,
+      totalRowsWithWarnings: 0,
+      warningDetailsJson: undefined,
+      totalDurationMs: Date.now() - t0,
+      importedAt: nowF,
+      finishedAt: nowF,
+    });
+  }
+
+  private async importInternal(
+    fileUploadId: string,
+    runId: string,
+    matrix: Matrix,
+    t0: number,
+    partialMode: 'stage' | 'commit' = 'stage',
+  ) {
+    const tParseStart = Date.now();
+    const det = detectHeaderRowAndColumns(
+      matrix,
+      INTERNAL_COLUMN_SYNONYMS,
+      2,
+    );
+    if (!det) {
+      await this.fail(
+        fileUploadId,
+        t0,
+        'Cabeçalho não reconhecido. Ajuste os títulos (fornecedor e valor são obrigatórios).',
+      );
+      return;
+    }
+    const { headerRowIndex, columnByField } = det;
+    if (
+      columnByField.supplierNameRaw === undefined ||
+      columnByField.amount === undefined
+    ) {
+      await this.fail(
+        fileUploadId,
+        t0,
+        'Colunas obrigatórias: fornecedor e valor.',
+      );
+      return;
+    }
+    preferInternalSupplierNameColumn(matrix, headerRowIndex, columnByField);
+    await this.uploadRepo.updateById(fileUploadId, {
+      headerRowIndex,
+      detectedColumnsJson: { internal: columnByField },
+    });
+    const dataStart = headerRowIndex + 1;
+    const col = columnByField as Record<InternalImportField, number | undefined>;
+    const maxCol = Math.max(
+      0,
+      ...Object.values(col).map((c) => (c === undefined ? 0 : c!)),
+    ) + 1;
+
+    const dataRows: unknown[][] = [];
+    for (let r = dataStart; r < matrix.length; r++) {
+      const row = matrix[r];
+      if (!row) continue;
+      if (isRowEmpty(row as unknown[], maxCol + 2)) continue;
+      dataRows.push(row as unknown[]);
+    }
+    const totalRows = dataRows.length;
+    if (totalRows === 0) {
+      await this.fail(fileUploadId, t0, 'Nenhuma linha de dado após o cabeçalho.');
+      return;
+    }
+
+    const tParseEnd = Date.now();
+    const parseDurationMs = tParseEnd - tParseStart;
+
+    await this.uploadRepo.updateById(fileUploadId, {
+      status: UploadStatus.IMPORTING,
+      totalRowsDetected: totalRows,
+      parsingFinishedAt: new Date(),
+    });
+
+    const tImport = Date.now();
+    const toCreate: Prisma.InternalRecordCreateManyInput[] = [];
+    const warnings: { row: number; text: string }[] = [];
+    let rejected = 0;
+    let read = 0;
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i] as unknown[];
+      const excelRow = dataStart + i + 1;
+      read++;
+      const nameRaw = toOptionalString(getCell(row, col.supplierNameRaw)) ?? '';
+      const amount = parseBrAmount(getCell(row, col.amount));
+      if (!nameRaw) {
+        rejected++;
+        if (warnings.length < 30) {
+          warnings.push({ row: excelRow, text: 'Fornecedor vazio' });
+        }
+        if (read % PROGRESS_EVERY === 0) {
+          await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+        }
+        continue;
+      }
+      if (amount === null) {
+        rejected++;
+        if (warnings.length < 30) {
+          warnings.push({ row: excelRow, text: 'Valor inválido' });
+        }
+        if (read % PROGRESS_EVERY === 0) {
+          await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+        }
+        continue;
+      }
+      const suplCode = toOptionalInt(getCell(row, col.supplierCode));
+      const ap = parseBrAmount(getCell(row, col.amountPaid));
+      toCreate.push({
+        runId,
+        fileUploadId,
+        rowNumber: excelRow,
+        dueDate: parseFlexibleDate(getCell(row, col.dueDate)),
+        issueDate: parseFlexibleDate(getCell(row, col.issueDate)),
+        supplierCode: suplCode,
+        supplierNameRaw: nameRaw,
+        supplierNameNorm: normalizeCounterpartyName(nameRaw),
+        supplierNameCanon: null,
+        walletCode: toOptionalString(getCell(row, col.walletCode)),
+        branchCode: toOptionalString(getCell(row, col.branchCode)),
+        invoiceNumber: toOptionalString(getCell(row, col.invoiceNumber)),
+        installment: toOptionalString(getCell(row, col.installment)),
+        amount,
+        amountPaid: ap,
+        dda: toOptionalString(getCell(row, col.dda)),
+        notes: toOptionalString(getCell(row, col.notes)),
+      });
+      if (read % PROGRESS_EVERY === 0) {
+        await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
+      }
+    }
+
+    const importMs = Date.now() - tImport;
+    const hasWarn = warnings.length > 0 || rejected > 0;
+    if (hasWarn) {
+      if (toCreate.length === 0) {
+        await this.fail(
+          fileUploadId,
+          t0,
+          'Nenhuma linha válida para importar. Corrija a planilha e tente de novo.',
+        );
+        return;
+      }
+      if (partialMode === 'stage') {
+        const now = new Date();
+        await this.uploadRepo.updateById(fileUploadId, {
+          status: UploadStatus.AWAITING_CONFIRM,
+          importDurationMs: importMs,
+          parseDurationMs,
+          totalRowsRead: read,
+          totalRowsImported: toCreate.length,
+          totalRowsRejected: rejected,
+          totalRowsWithWarnings: warnings.length,
+          warningDetailsJson: { samples: warnings },
+          totalDurationMs: Date.now() - t0,
+          finishedAt: now,
+        });
+        return;
+      }
+      await this.internalRepo.deleteManyByFileUploadId(fileUploadId);
+      if (toCreate.length) {
+        await this.internalRepo.createManyChunked(toCreate);
+      }
+      const nowC = new Date();
+      await this.uploadRepo.updateById(fileUploadId, {
+        status: UploadStatus.PARTIAL_SUCCESS,
+        importDurationMs: importMs,
+        parseDurationMs,
+        totalRowsRead: read,
+        totalRowsImported: toCreate.length,
+        totalRowsRejected: rejected,
+        totalRowsWithWarnings: warnings.length,
+        warningDetailsJson: { samples: warnings },
+        totalDurationMs: Date.now() - t0,
+        importedAt: nowC,
+        finishedAt: nowC,
+      });
+      return;
+    }
+
+    await this.internalRepo.deleteManyByFileUploadId(fileUploadId);
+    if (toCreate.length) {
+      await this.internalRepo.createManyChunked(toCreate);
+    }
+    const nowF = new Date();
+    await this.uploadRepo.updateById(fileUploadId, {
+      status: UploadStatus.COMPLETED,
+      importDurationMs: importMs,
+      parseDurationMs,
+      totalRowsRead: read,
+      totalRowsImported: toCreate.length,
+      totalRowsRejected: 0,
+      totalRowsWithWarnings: 0,
+      warningDetailsJson: undefined,
+      totalDurationMs: Date.now() - t0,
+      importedAt: nowF,
+      finishedAt: nowF,
+    });
+  }
+
+  /**
+   * Execução mais recente do usuário para a empresa: prioriza run com upload mais recente;
+   * senão a execução mais recente (ex.: rascunho sem arquivo ainda).
+   * Uma única ida ao banco (antes: até 2 consultas sequenciais).
+   */
+  async getLatestRunForUser(userId: string, unit: UnitType) {
+    type Row = {
+      id: string;
+      title: string | null;
+      status: RunStatus;
+      unit: UnitType;
+    };
+    const rows = await prisma.$queryRaw<Row[]>(Prisma.sql`
+      WITH upload_pick AS (
+        SELECT r.id, r.title, r.status, r.unit
+        FROM "FileUpload" fu
+        INNER JOIN "ReconciliationRun" r ON r.id = fu."runId"
+        WHERE r."createdById" = ${userId}
+          AND r.unit = ${unit}::"UnitType"
+        ORDER BY fu."updatedAt" DESC
+        LIMIT 1
+      ),
+      fallback_pick AS (
+        SELECT r.id, r.title, r.status, r.unit
+        FROM "ReconciliationRun" r
+        WHERE r."createdById" = ${userId}
+          AND r.unit = ${unit}::"UnitType"
+        ORDER BY r."createdAt" DESC
+        LIMIT 1
+      )
+      SELECT id, title, status, unit FROM (
+        SELECT id, title, status, unit FROM upload_pick
+        UNION ALL
+        SELECT id, title, status, unit FROM fallback_pick
+        WHERE NOT EXISTS (SELECT 1 FROM upload_pick)
+      ) AS resolved
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Gera e persiste sugestões de vínculo no banco (chamada explícita após importar banco + interno).
+   * Exige lançamentos dos dois lados.
+   */
+  async finalizeRunWithSuggestions(runId: string, userId: string) {
+    const run = await prisma.reconciliationRun.findFirst({
+      where: { id: runId, createdById: userId },
+    });
+    if (!run) {
+      throw new HttpError('Execução não encontrada ou acesso negado', 404);
+    }
+    const [bankC, intC] = await Promise.all([
+      prisma.bankRecord.count({ where: { runId } }),
+      prisma.internalRecord.count({ where: { runId } }),
+    ]);
+    if (bankC === 0 || intC === 0) {
+      throw new HttpError(
+        'Importe e confirme a planilha do banco e a do sistema interno antes de gerar os vínculos.',
+        400,
+      );
+    }
+    return generateMatchSuggestionsForRun(runId);
+  }
+}
