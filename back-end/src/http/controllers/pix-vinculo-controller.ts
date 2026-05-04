@@ -150,6 +150,7 @@ export async function getPaymentVinculoInstruction(
     where: { id: suggestionId, runId, status: SuggestionStatus.APPROVED },
     include: {
       internalLinks: { include: { internalRecord: true } },
+      bankLinks: { include: { bankRecord: true } },
     },
   })
   if (!s) {
@@ -163,8 +164,50 @@ export async function getPaymentVinculoInstruction(
     reason: s.reason,
   })
   if (!vk) {
-    throw new HttpError('Esta sugestão não é de pagamento PIX/TED aprovado.', 400)
+    throw new HttpError(
+      'Esta sugestão não é de pagamento PIX, TED ou boleto manual aprovado.',
+      400,
+    )
   }
+
+  if (vk === PaymentVinculoKind.BOLETO) {
+    const b0 = s.bankLinks[0]?.bankRecord
+    const int0 = s.internalLinks[0]?.internalRecord
+    const fromBank = b0 != null
+    const fromErp = int0 != null
+    if (!fromBank && !fromErp) {
+      throw new HttpError('Sem lançamento bancário ou ERP vinculado', 400)
+    }
+    const amount = (fromBank ? b0!.amount : int0!.amount).toString()
+    const due = fromBank ? b0!.dueDate : int0!.dueDate
+    const dueDate = due
+      ? due.toLocaleDateString('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+      })
+      : null
+    const hasEv =
+      s.manualBoletoEvidenceRelPath != null
+      && s.manualBoletoEvidenceRelPath.length > 0
+    const beneficiaryName = fromBank
+      ? b0!.beneficiaryNameRaw
+      : int0!.supplierNameRaw
+    return reply.status(200).send({
+      kind: 'BOLETO' as const,
+      amount,
+      amountFormatted: amount,
+      dueDate,
+      hasRegistryDetails: hasEv,
+      beneficiaryName,
+      vinculo: null,
+      paidAt: s.paidAt ? s.paidAt.toISOString() : null,
+      /** true = valor/nome vêm do ERP (sem par banco). */
+      sourceFromErp: !fromBank,
+      evidencePath: hasEv
+        ? `/reconciliation/runs/${runId}/suggestions/${suggestionId}/manual-boleto-evidence`
+        : null,
+    })
+  }
+
   const int0 = s.internalLinks[0]?.internalRecord
   if (!int0) {
     throw new HttpError('Sem lançamento interno/ERP vinculado', 400)
@@ -188,5 +231,7 @@ export async function getPaymentVinculoInstruction(
     hasRegistryDetails: reg != null && paymentVinculoHasDetails(reg),
     vinculo: reg ? serializeVinculoRow(reg) : null,
     paidAt: s.paidAt ? s.paidAt.toISOString() : null,
+    beneficiaryName: null,
+    evidencePath: null,
   })
 }

@@ -26,8 +26,11 @@ export function vinculoKindFromSuggestion(s: {
   paymentVinculoKind: PaymentVinculoKind | null;
   reason: SuggestionReason;
 }): PaymentVinculoKind | null {
-  if (s.paymentVinculoKind === PaymentVinculoKind.PIX
-    || s.paymentVinculoKind === PaymentVinculoKind.TED) {
+  if (
+    s.paymentVinculoKind === PaymentVinculoKind.PIX
+    || s.paymentVinculoKind === PaymentVinculoKind.TED
+    || s.paymentVinculoKind === PaymentVinculoKind.BOLETO
+  ) {
     return s.paymentVinculoKind;
   }
   if (s.reason === SuggestionReason.PIX_CANDIDATE
@@ -37,6 +40,9 @@ export function vinculoKindFromSuggestion(s: {
   if (s.reason === SuggestionReason.TED_CANDIDATE
     || s.reason === SuggestionReason.TED_VINCULO_OK) {
     return PaymentVinculoKind.TED;
+  }
+  if (s.reason === SuggestionReason.BOLETO_VINCULO_OK) {
+    return PaymentVinculoKind.BOLETO;
   }
   return null;
 }

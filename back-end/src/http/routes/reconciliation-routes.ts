@@ -9,6 +9,11 @@ import {
   putPaymentVinculoById,
 } from '../controllers/pix-vinculo-controller.js';
 import {
+  getBankExtratoState,
+  postBankExtratoManualMatch,
+  uploadBankExtrato,
+} from '../controllers/bank-extrato-controller.js';
+import {
   cancelStagedFileUpload,
   confirmStagedFileUpload,
   createReconciliationRun,
@@ -27,6 +32,8 @@ import {
   getBankOnlyInternalSumCandidates,
   getSuggestionMultipleCandidates,
   listRunSuggestions,
+  getManualBoletoEvidence,
+  linkManualBoletoVinculo,
   markSuggestionPaid,
   resolveBankOnlyInternalSum,
   resolveMultipleCandidateAndConfirm,
@@ -59,6 +66,21 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     '/runs/latest',
     { preHandler: requireFinancial },
     getLatestReconciliationRun,
+  );
+  app.post(
+    '/runs/:runId/bank-extrato',
+    { preHandler: requireFinancial },
+    uploadBankExtrato,
+  );
+  app.get(
+    '/runs/:runId/bank-extrato/state',
+    { preHandler: requireFinancial },
+    getBankExtratoState,
+  );
+  app.post(
+    '/runs/:runId/bank-extrato/manual-match',
+    { preHandler: requireFinancial },
+    postBankExtratoManualMatch,
   );
   app.get(
     '/runs/:runId',
@@ -114,6 +136,16 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     '/runs/:runId/suggestions/:suggestionId/link-payment',
     { preHandler: requireFinancial },
     linkPaymentVinculo,
+  );
+  app.post(
+    '/runs/:runId/suggestions/:suggestionId/link-manual-boleto',
+    { preHandler: requireFinancial },
+    linkManualBoletoVinculo,
+  );
+  app.get(
+    '/runs/:runId/suggestions/:suggestionId/manual-boleto-evidence',
+    { preHandler: requireFinancial },
+    getManualBoletoEvidence,
   );
   app.post(
     '/runs/:runId/suggestions/:suggestionId/mark-paid',

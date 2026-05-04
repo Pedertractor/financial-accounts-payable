@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -51,17 +52,18 @@ import {
 import {
   confirmSuggestionsBatch,
   getApiBase,
-  getLatestReconciliationRun,
-  getReconciliationRun,
   listRunSuggestions,
   markSuggestionPaid,
   requestInitWithTimeout,
   type SuggestionListItem,
+  type SuggestionListResponse,
 } from '@/lib/api';
 import {
-  getStoredReconciliationRunId,
-  setStoredReconciliationRunId,
-  clearStoredReconciliationRunId,
+  fetchVinculosReconciliationRunId,
+  VINCULOS_RUN_QUERY_GC_MS,
+  VINCULOS_RUN_QUERY_STALE_MS,
+} from '@/lib/reconcile-run-session';
+import {
   getStoredVinculosDateRange,
   setStoredVinculosDateRange,
   type VinculosDateRangeYmd,
@@ -138,35 +140,35 @@ function formatCompareRangeLabel(range: VinculosDateRangeYmd): string {
 
 const REASON_META: Record<string, { label: string; className: string }> = {
   EXACT_NAME_VALUE: {
-    label: 'NOME E VALOR EXATOS',
+    label: 'Nome e valor exatos',
     className: 'text-emerald-700 dark:text-emerald-400',
   },
   FUZZY_NAME_MATCH: {
-    label: 'NOME APROXIMADO',
+    label: 'Nome aproximado',
     className: 'text-sky-700 dark:text-sky-400',
   },
   VALUE_ONLY: {
-    label: 'SÓ VALOR',
+    label: 'Só valor',
     className: 'text-emerald-600 dark:text-emerald-400',
   },
   MULTIPLE_CANDIDATES: {
-    label: 'VÁRIOS CANDIDATOS',
+    label: 'Vários candidatos',
     className: 'text-amber-700 dark:text-amber-400',
   },
   AGGREGATED_CANDIDATE: {
-    label: 'AGREGADO',
+    label: 'Agregado',
     className: 'text-violet-700 dark:text-violet-400',
   },
   NO_INTERNAL_MATCH: {
-    label: 'SEM PAR INTERNO',
+    label: 'Sem par interno',
     className: 'text-red-600 dark:text-red-400',
   },
   NO_BANK_MATCH: {
-    label: 'SEM PAR BANCO',
+    label: 'Sem par banco',
     className: 'text-red-600 dark:text-red-400',
   },
   PIX_CANDIDATE: {
-    label: 'PIX (SUGESTÃO)',
+    label: 'PIX (sugestão)',
     className: 'text-teal-600 dark:text-teal-400',
   },
   PIX_VINCULO_OK: {
@@ -174,15 +176,19 @@ const REASON_META: Record<string, { label: string; className: string }> = {
     className: 'text-emerald-600 dark:text-emerald-400',
   },
   TED_CANDIDATE: {
-    label: 'TED (SUGESTÃO)',
+    label: 'TED (sugestão)',
     className: 'text-cyan-600 dark:text-cyan-400',
   },
   TED_VINCULO_OK: {
     label: 'TED',
     className: 'text-sky-600 dark:text-sky-400',
   },
+  BOLETO_VINCULO_OK: {
+    label: 'Conferência manual',
+    className: 'text-orange-600 dark:text-orange-400',
+  },
   MANUAL_REVIEW_REQUIRED: {
-    label: 'REVISÃO MANUAL',
+    label: 'Revisão manual',
     className: 'text-amber-700 dark:text-amber-400',
   },
 };
@@ -194,10 +200,7 @@ function ReasonCell({ reason }: { reason: string }) {
   };
   return (
     <span
-      className={cn(
-        'font-mono text-xs font-medium tracking-tight',
-        meta.className,
-      )}
+      className={cn('text-xs font-medium tracking-tight', meta.className)}
     >
       {meta.label}
     </span>
@@ -243,7 +246,7 @@ function MotivoDiffCell({ row }: { row: SuggestionListItem }) {
             </span>
           ) : null}
           <span
-            className='text-amber-800 dark:text-amber-200 font-mono text-xs font-semibold tracking-tight'
+            className='text-amber-800 dark:text-amber-200 text-xs font-semibold tracking-tight'
             title={detalheEnum}
           >
             Revisão
@@ -290,7 +293,12 @@ function MotivoDiffCell({ row }: { row: SuggestionListItem }) {
   );
 }
 
-type SortColumn = 'index' | 'amount';
+type SortColumn =
+  | 'index'
+  | 'amount'
+  | 'motivo'
+  | 'externo'
+  | 'interno';
 type SortDir = 'asc' | 'desc';
 
 function parseAmount(n: string | null | undefined): number {
@@ -320,6 +328,45 @@ function bancoBarraInternoText(r: SuggestionListItem): string {
     return formatBrlAmount(r.amount);
   }
   return `${b} / ${i}`;
+}
+
+/** Rótulo estável para ordenar a coluna Motivo / diferença (alinhado ao que a célula mostra). */
+function motivoForSort(r: SuggestionListItem): string {
+  const detalhe = REASON_META[r.reason]?.label ?? r.reason;
+  if (getReasonCategory(r) === 'revisao') {
+    return `Revisão — ${detalhe}`;
+  }
+  return detalhe;
+}
+
+/** Nome para ordenação A–Z / Z–A; vazio vai ao fim, como no valor sem número. */
+function compareDisplayName(
+  a: SuggestionListItem,
+  b: SuggestionListItem,
+  get: (r: SuggestionListItem) => string,
+  dir: SortDir,
+): number {
+  const sa = (get(a) ?? '').trim();
+  const sb = (get(b) ?? '').trim();
+  const aEmpty = sa === '';
+  const bEmpty = sb === '';
+  if (aEmpty && bEmpty) {
+    return 0;
+  }
+  if (aEmpty) {
+    return 1;
+  }
+  if (bEmpty) {
+    return -1;
+  }
+  const cmp = sa.localeCompare(sb, 'pt-BR', {
+    numeric: true,
+    sensitivity: 'base',
+  });
+  if (cmp !== 0) {
+    return dir === 'asc' ? cmp : -cmp;
+  }
+  return 0;
 }
 
 function getSuggestionStatus(r: SuggestionListItem): string {
@@ -356,8 +403,12 @@ function canShowConfirmA(r: SuggestionListItem): boolean {
 
 function getApprovedPaymentVinculoKind(
   r: SuggestionListItem,
-): 'PIX' | 'TED' | null {
-  if (r.paymentVinculoKind === 'PIX' || r.paymentVinculoKind === 'TED') {
+): 'PIX' | 'TED' | 'BOLETO' | null {
+  if (
+    r.paymentVinculoKind === 'PIX'
+    || r.paymentVinculoKind === 'TED'
+    || r.paymentVinculoKind === 'BOLETO'
+  ) {
     return r.paymentVinculoKind;
   }
   if (r.reason === 'PIX_VINCULO_OK') {
@@ -366,11 +417,21 @@ function getApprovedPaymentVinculoKind(
   if (r.reason === 'TED_VINCULO_OK') {
     return 'TED';
   }
+  if (r.reason === 'BOLETO_VINCULO_OK') {
+    return 'BOLETO';
+  }
   return null;
 }
 
 function isSuggestionMarkedPaid(r: SuggestionListItem): boolean {
   return r.paidAt != null && r.paidAt !== '';
+}
+
+/** Conferido e ainda não marcado como pago — elegível para marcar com a tecla P em lote. */
+function canMarkPaidAsConferido(r: SuggestionListItem): boolean {
+  return (
+    getSuggestionStatus(r) === 'APPROVED' && !isSuggestionMarkedPaid(r)
+  );
 }
 
 function StatusCell({ row }: { row: SuggestionListItem }) {
@@ -379,7 +440,7 @@ function StatusCell({ row }: { row: SuggestionListItem }) {
     return (
       <Badge
         variant='secondary'
-        className='border-violet-200 bg-violet-50 font-mono text-xs text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200'
+        className='border-violet-200 bg-violet-50 text-xs text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200'
       >
         Pago
       </Badge>
@@ -389,7 +450,7 @@ function StatusCell({ row }: { row: SuggestionListItem }) {
     return (
       <Badge
         variant='secondary'
-        className='border-emerald-200 bg-emerald-50 font-mono text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200'
+        className='border-emerald-200 bg-emerald-50 text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200'
       >
         Conferido
       </Badge>
@@ -399,14 +460,14 @@ function StatusCell({ row }: { row: SuggestionListItem }) {
     return (
       <Badge
         variant='secondary'
-        className='font-mono text-xs border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200'
+        className='text-xs border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200'
       >
         Pendente
       </Badge>
     );
   }
   return (
-    <span className='text-muted-foreground font-mono text-[0.7rem]'>{st}</span>
+    <span className='text-muted-foreground text-[0.7rem]'>{st}</span>
   );
 }
 
@@ -414,7 +475,7 @@ const suggestionsQk = (
   unit: ConciliationUnit,
   rid: string | null | undefined,
   range: VinculosDateRangeYmd,
-  statusFilter: 'todos' | 'pendente' | 'conferido' | 'pago',
+  statusFilter: 'todos' | 'pendente' | 'conferido',
 ) =>
   [
     'reconciliation-suggestions',
@@ -424,6 +485,21 @@ const suggestionsQk = (
     range.to,
     statusFilter,
   ] as const;
+
+/** Não reutiliza linhas/resumo de outra execução ou empresa (ex.: PEDERTRACTOR → TRACTOR). */
+function keepPreviousSuggestionsForSameRun(
+  unit: ConciliationUnit,
+  rid: string | null | undefined,
+  prev: SuggestionListResponse | undefined,
+): SuggestionListResponse | undefined {
+  if (prev == null || rid == null) {
+    return undefined;
+  }
+  if (prev.run.id !== rid || prev.run.unit !== unit) {
+    return undefined;
+  }
+  return prev;
+}
 
 /** Não dispara atalho A em campos de edição; checkboxes/radio não bloqueiam (foco fica neles após marcar). */
 function shouldBlockConfirmHotkey(target: EventTarget | null): boolean {
@@ -504,7 +580,7 @@ export function VinculosPage() {
     dir: SortDir;
   } | null>(null);
   const [statusFilter, setStatusFilter] = useState<
-    'todos' | 'pendente' | 'conferido' | 'pago'
+    'todos' | 'pendente' | 'conferido'
   >('todos');
   const [suggestionDetail, setSuggestionDetail] = useState<{
     row: SuggestionListItem;
@@ -529,38 +605,18 @@ export function VinculosPage() {
 
   const {
     data: runId,
-    isLoading: runLoading,
+    /** `isLoading` = pending && fetching; com só `isLoading` a tela podia renderizar a tabela vazia
+     *  (ex.: trocar PEDERTRACTOR → TRACTOR) enquanto ainda `pending` e `!fetching` (retry, etc.). */
+    isPending: runPending,
     isError: runIsError,
     error: runError,
     refetch: refetchRun,
   } = useQuery({
     queryKey: ['reconciliation-run', 'vinculos', unitFilter],
-    queryFn: async ({ signal }) => {
-      const rInit = requestInitWithTimeout(signal, 45_000);
-      const existing = getStoredReconciliationRunId();
-      if (existing) {
-        try {
-          const { run } = await getReconciliationRun(existing, rInit);
-          if (run.unit === unitFilter) {
-            return existing;
-          }
-        } catch {
-          /* 404 / inválido */
-        }
-        clearStoredReconciliationRunId();
-      }
-      const { run: latest } = await getLatestReconciliationRun(
-        { unit: unitFilter },
-        rInit,
-      );
-      if (latest) {
-        setStoredReconciliationRunId(latest.id);
-        return latest.id;
-      }
-      return null;
-    },
-    /** Evita refetch a cada remount (ex.: React StrictMode) e reduz pisca de "Carregando…". */
-    staleTime: 60_000,
+    queryFn: async ({ signal }) =>
+      fetchVinculosReconciliationRunId(unitFilter, signal),
+    staleTime: VINCULOS_RUN_QUERY_STALE_MS,
+    gcTime: VINCULOS_RUN_QUERY_GC_MS,
   });
 
   const {
@@ -570,7 +626,7 @@ export function VinculosPage() {
     error,
     isFetching: suggestionsIsFetching,
     isPlaceholderData: suggestionsIsPlaceholder,
-  } = useQuery({
+  } = useQuery<SuggestionListResponse>({
     queryKey: suggestionsQk(unitFilter, runId, compareRange, statusFilter),
     queryFn: async ({ signal }) => {
       const sInit = requestInitWithTimeout(signal, 120_000);
@@ -588,8 +644,9 @@ export function VinculosPage() {
     enabled: runId != null,
     /** Menos requisições em foco/remount; F5 ainda força carga completa. */
     staleTime: 60_000,
-    /** Mantém tabela enquanto troca data/filtro (só aplica o novo dado ao chegar). */
-    placeholderData: (prev) => prev,
+    /** Mantém tabela enquanto troca data/filtro **no mesmo run**; nunca mistura outra empresa/run. */
+    placeholderData: (prev) =>
+      keepPreviousSuggestionsForSameRun(unitFilter, runId, prev),
   });
 
   /** 1ª carga, ou data/filtro mudou: fetch novo enquanto a UI ainda mostra o resultado anterior (placeholder). */
@@ -617,6 +674,26 @@ export function VinculosPage() {
       if (runId) {
         void queryClient.invalidateQueries({
           queryKey: ['reconciliation-suggestions', unitFilter, runId],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ['bank-extrato-state', runId],
+        });
+      }
+    },
+  });
+
+  const markPaidBatchMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      await Promise.all(ids.map((id) => markSuggestionPaid(runId!, id)));
+    },
+    onSuccess: () => {
+      setSelectedIds(new Set());
+      if (runId) {
+        void queryClient.invalidateQueries({
+          queryKey: ['reconciliation-suggestions', unitFilter, runId],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ['bank-extrato-state', runId],
         });
       }
     },
@@ -650,6 +727,45 @@ export function VinculosPage() {
       withOrig.sort((a, b) =>
         tableSort.dir === 'asc' ? a.orig - b.orig : b.orig - a.orig,
       );
+    } else if (tableSort.column === 'motivo') {
+      withOrig.sort((a, b) => {
+        const sa = motivoForSort(a.r);
+        const sb = motivoForSort(b.r);
+        const cmp = sa.localeCompare(sb, 'pt-BR', {
+          numeric: true,
+          sensitivity: 'base',
+        });
+        if (cmp !== 0) {
+          return tableSort.dir === 'asc' ? cmp : -cmp;
+        }
+        return a.orig - b.orig;
+      });
+    } else if (tableSort.column === 'externo') {
+      withOrig.sort((a, b) => {
+        const c = compareDisplayName(
+          a.r,
+          b.r,
+          (r) => r.externalName,
+          tableSort.dir,
+        );
+        if (c !== 0) {
+          return c;
+        }
+        return a.orig - b.orig;
+      });
+    } else if (tableSort.column === 'interno') {
+      withOrig.sort((a, b) => {
+        const c = compareDisplayName(
+          a.r,
+          b.r,
+          (r) => r.internalName,
+          tableSort.dir,
+        );
+        if (c !== 0) {
+          return c;
+        }
+        return a.orig - b.orig;
+      });
     } else {
       withOrig.sort((a, b) => {
         const na = amountForSort(a.r);
@@ -673,6 +789,13 @@ export function VinculosPage() {
     return [...selectedIds].filter((id) => {
       const r = rowById.get(id);
       return r != null && canShowConfirmA(r);
+    });
+  }, [selectedIds, rowById]);
+
+  const selectedMarkPaidIds = useMemo(() => {
+    return [...selectedIds].filter((id) => {
+      const r = rowById.get(id);
+      return r != null && canMarkPaidAsConferido(r);
     });
   }, [selectedIds, rowById]);
 
@@ -784,6 +907,42 @@ export function VinculosPage() {
     });
   }
 
+  function cycleSortMotivo() {
+    setTableSort((prev) => {
+      if (prev?.column !== 'motivo') {
+        return { column: 'motivo', dir: 'asc' };
+      }
+      if (prev.dir === 'asc') {
+        return { column: 'motivo', dir: 'desc' };
+      }
+      return null;
+    });
+  }
+
+  function cycleSortExterno() {
+    setTableSort((prev) => {
+      if (prev?.column !== 'externo') {
+        return { column: 'externo', dir: 'asc' };
+      }
+      if (prev.dir === 'asc') {
+        return { column: 'externo', dir: 'desc' };
+      }
+      return null;
+    });
+  }
+
+  function cycleSortInterno() {
+    setTableSort((prev) => {
+      if (prev?.column !== 'interno') {
+        return { column: 'interno', dir: 'asc' };
+      }
+      if (prev.dir === 'asc') {
+        return { column: 'interno', dir: 'desc' };
+      }
+      return null;
+    });
+  }
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'a' && e.key !== 'A') {
@@ -807,6 +966,36 @@ export function VinculosPage() {
       window.removeEventListener('keydown', onKey);
     };
   }, [confirmBatchMutation, runId, selectedConfirmableIds]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'p' && e.key !== 'P') {
+        return;
+      }
+      if (shouldBlockConfirmHotkey(e.target)) {
+        return;
+      }
+      if (
+        markPaidBatchMutation.isPending ||
+        markPaidMutation.isPending ||
+        selectedMarkPaidIds.length === 0 ||
+        !runId
+      ) {
+        return;
+      }
+      e.preventDefault();
+      markPaidBatchMutation.mutate(selectedMarkPaidIds);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [
+    markPaidBatchMutation,
+    markPaidMutation.isPending,
+    runId,
+    selectedMarkPaidIds,
+  ]);
 
   if (runIsError) {
     const msg =
@@ -832,8 +1021,25 @@ export function VinculosPage() {
     );
   }
 
-  if (runLoading) {
-    return <div className='text-muted-foreground p-4 text-sm'>Carregando…</div>;
+  if (runPending) {
+    return (
+      <div
+        role='status'
+        aria-live='polite'
+        className='flex min-h-[min(12rem,50vh)] flex-col items-center justify-center gap-3 px-4 py-12'
+      >
+        <span className='sr-only'>Carregando sessão de conciliação</span>
+        <div className='flex items-center gap-3'>
+          <Loader2
+            className='text-muted-foreground size-5 shrink-0 animate-spin'
+            aria-hidden
+          />
+          <p className='text-muted-foreground text-sm'>
+            Carregando sessão de conciliação…
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -857,18 +1063,31 @@ export function VinculosPage() {
 
         <div className='flex w-full flex-col items-stretch gap-2 sm:max-w-2xl sm:items-end'>
           <div className='flex flex-wrap items-end justify-end gap-3 self-end sm:justify-end'>
-            <>
-              <div className='flex flex-col gap-0.5'>
-                <span className='text-muted-foreground text-[0.65rem] uppercase'>
-                  Pendentes
-                </span>
-                <button
+            <div className='flex flex-col gap-1'>
+              <span className='text-muted-foreground text-[0.65rem] font-medium'>
+                Filtro da lista
+              </span>
+              <div className='flex flex-wrap gap-1'>
+                <Button
                   type='button'
-                  title={
-                    statusFilter === 'pendente'
-                      ? 'Mostrar todas as sugestões'
-                      : 'Mostrar só itens pendentes'
-                  }
+                  size='xs'
+                  variant={statusFilter === 'todos' ? 'secondary' : 'outline'}
+                  aria-pressed={statusFilter === 'todos'}
+                  onClick={() => {
+                    setStatusFilter('todos');
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  Todos ({summary.total.toLocaleString('pt-BR')})
+                </Button>
+                <Button
+                  type='button'
+                  size='xs'
+                  variant={statusFilter === 'pendente' ? 'secondary' : 'outline'}
+                  className={cn(
+                    statusFilter === 'pendente' &&
+                      'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200',
+                  )}
                   aria-pressed={statusFilter === 'pendente'}
                   onClick={() => {
                     setStatusFilter((f) =>
@@ -876,31 +1095,17 @@ export function VinculosPage() {
                     );
                     setSelectedIds(new Set());
                   }}
-                  className={cn(
-                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                    statusFilter === 'pendente' &&
-                      'ring-2 ring-amber-500/60 ring-offset-1',
-                  )}
                 >
-                  <Badge
-                    variant='secondary'
-                    className='h-7 w-full min-w-0 cursor-pointer border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/50 dark:text-amber-200'
-                  >
-                    {summary.pendente.toLocaleString('pt-BR')} pendentes
-                  </Badge>
-                </button>
-              </div>
-              <div className='flex flex-col gap-0.5'>
-                <span className='text-muted-foreground text-[0.65rem] uppercase'>
-                  Conferido
-                </span>
-                <button
+                  Pendentes ({summary.pendente.toLocaleString('pt-BR')})
+                </Button>
+                <Button
                   type='button'
-                  title={
-                    statusFilter === 'conferido'
-                      ? 'Mostrar todas as sugestões'
-                      : 'Mostrar só itens conferidos (ainda não pagos)'
-                  }
+                  size='xs'
+                  variant={statusFilter === 'conferido' ? 'secondary' : 'outline'}
+                  className={cn(
+                    statusFilter === 'conferido' &&
+                      'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200',
+                  )}
                   aria-pressed={statusFilter === 'conferido'}
                   onClick={() => {
                     setStatusFilter((f) =>
@@ -908,51 +1113,18 @@ export function VinculosPage() {
                     );
                     setSelectedIds(new Set());
                   }}
-                  className={cn(
-                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                    statusFilter === 'conferido' &&
-                      'ring-2 ring-emerald-500/60 ring-offset-1',
-                  )}
                 >
-                  <Badge
-                    variant='secondary'
-                    className='h-7 w-full min-w-0 cursor-pointer border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/50 dark:text-emerald-200'
-                  >
-                    {summary.conferido.toLocaleString('pt-BR')} conferido
-                  </Badge>
-                </button>
+                  Conferido ({summary.conferido.toLocaleString('pt-BR')})
+                </Button>
               </div>
-              <div className='flex flex-col gap-0.5'>
-                <span className='text-muted-foreground text-[0.65rem] uppercase'>
-                  Pago
-                </span>
-                <button
-                  type='button'
-                  title={
-                    statusFilter === 'pago'
-                      ? 'Mostrar todas as sugestões'
-                      : 'Mostrar só itens marcados como pago'
-                  }
-                  aria-pressed={statusFilter === 'pago'}
-                  onClick={() => {
-                    setStatusFilter((f) => (f === 'pago' ? 'todos' : 'pago'));
-                    setSelectedIds(new Set());
-                  }}
-                  className={cn(
-                    'focus-visible:ring-ring rounded-md p-0 text-left focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
-                    statusFilter === 'pago' &&
-                      'ring-2 ring-violet-500/60 ring-offset-1',
-                  )}
-                >
-                  <Badge
-                    variant='secondary'
-                    className='h-7 w-full min-w-0 cursor-pointer border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-900/50 dark:bg-violet-950/50 dark:text-violet-200'
-                  >
-                    {summary.pago.toLocaleString('pt-BR')} pago
-                  </Badge>
-                </button>
-              </div>
-            </>
+              <p className='text-muted-foreground max-w-xs text-[0.65rem] leading-snug'>
+                Contas já pagas estão em{' '}
+                <Link className='text-foreground underline' to='/contas'>
+                  Contas pagas
+                </Link>{' '}
+                (menu lateral).
+              </p>
+            </div>
             <div className='flex w-max max-w-full min-w-0 flex-col gap-1.5'>
               <Label
                 htmlFor='compare-date'
@@ -1070,6 +1242,13 @@ export function VinculosPage() {
             : 'Não foi possível confirmar as sugestões selecionadas.'}
         </p>
       )}
+      {markPaidBatchMutation.isError && (
+        <p className='text-destructive text-sm' role='alert'>
+          {markPaidBatchMutation.error instanceof Error
+            ? markPaidBatchMutation.error.message
+            : 'Não foi possível marcar como pago as linhas selecionadas.'}
+        </p>
+      )}
 
       <Card className='border-border/60 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
         <CardContent className='p-0'>
@@ -1106,10 +1285,30 @@ export function VinculosPage() {
                       />
                     </TableHead>
                     <TableHead className='min-w-40 text-xs'>
-                      Externo (banco)
+                      <SortableTh
+                        label='Externo (banco)'
+                        active={tableSort?.column === 'externo'}
+                        direction={
+                          tableSort?.column === 'externo'
+                            ? tableSort.dir
+                            : null
+                        }
+                        onClick={cycleSortExterno}
+                        screenReaderHint='Ordenar alfabeticamente pelo nome no banco. A a Z, Z a A ou ordem original da API.'
+                      />
                     </TableHead>
                     <TableHead className='min-w-40 text-xs'>
-                      Interno (ERP)
+                      <SortableTh
+                        label='Interno (ERP)'
+                        active={tableSort?.column === 'interno'}
+                        direction={
+                          tableSort?.column === 'interno'
+                            ? tableSort.dir
+                            : null
+                        }
+                        onClick={cycleSortInterno}
+                        screenReaderHint='Ordenar alfabeticamente pelo nome no ERP. A a Z, Z a A ou ordem original da API.'
+                      />
                     </TableHead>
                     <TableHead className='min-w-26 whitespace-nowrap text-xs'>
                       Vencimento
@@ -1131,7 +1330,15 @@ export function VinculosPage() {
                       </div>
                     </TableHead>
                     <TableHead className='min-w-32 text-xs'>
-                      Motivo / diferença
+                      <SortableTh
+                        label='Motivo / diferença'
+                        active={tableSort?.column === 'motivo'}
+                        direction={
+                          tableSort?.column === 'motivo' ? tableSort.dir : null
+                        }
+                        onClick={cycleSortMotivo}
+                        screenReaderHint='Ordenar alfabeticamente pelo motivo (revisão ou rótulo). A a Z, Z a A ou ordem original da API.'
+                      />
                     </TableHead>
                     <TableHead className='w-24 text-xs'>Status</TableHead>
                     <TableHead className='w-16 min-w-14 text-right text-xs'>
@@ -1317,6 +1524,41 @@ export function VinculosPage() {
                                 </Tooltip>
                               ) : null}
                               {getSuggestionStatus(row) === 'APPROVED' &&
+                              getApprovedPaymentVinculoKind(row) === 'BOLETO' ? (
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={<span className='inline-flex' />}
+                                  >
+                                    <Button
+                                      type='button'
+                                      variant='ghost'
+                                      size='icon-sm'
+                                      className={cn(
+                                        'h-7 w-7',
+                                        row.manualBoletoHasEvidence
+                                          ? 'text-orange-600 hover:text-orange-700 dark:text-orange-400'
+                                          : 'text-muted-foreground/60 opacity-60 hover:opacity-100',
+                                      )}
+                                      aria-label='Vínculo manual — instrução'
+                                      disabled={!runId}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (runId) {
+                                          setPaymentInstructionId(row.id);
+                                        }
+                                      }}
+                                    >
+                                      <Link2 className='size-4' />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent className='max-w-[16rem] text-xs'>
+                                    {row.manualBoletoHasEvidence
+                                      ? 'Abrir valor, vencimento, favorecido e comprovante anexado'
+                                      : 'Abrir valor e vencimento (sem comprovante anexado)'}
+                                  </TooltipContent>
+                                </Tooltip>
+                              ) : null}
+                              {getSuggestionStatus(row) === 'APPROVED' &&
                               getApprovedPaymentVinculoKind(row) == null ? (
                                 isSuggestionMarkedPaid(row) ? (
                                   <Tooltip>
@@ -1418,6 +1660,8 @@ export function VinculosPage() {
             <span>
               <span className='mx-2'>·</span>
               <span>com ação A: {selectedConfirmableIds.length}</span>
+              <span className='mx-2'>·</span>
+              <span>com ação P: {selectedMarkPaidIds.length}</span>
             </span>
           ) : null}
         </div>
@@ -1551,12 +1795,12 @@ function SortableTh({
       size='xs'
       onClick={onClick}
       className={cn(
-        'text-muted-foreground -mx-1.5 h-7 gap-1 font-mono font-medium tracking-wide',
+        'text-muted-foreground -mx-1.5 h-7 gap-1 text-xs font-medium tracking-tight',
         active && 'text-foreground',
         className,
       )}
     >
-      <span className='uppercase leading-none'>{label}</span>
+      <span className='leading-none'>{label}</span>
       {active && direction != null ? (
         direction === 'asc' ? (
           <ArrowUp className='size-3.5 opacity-100' />

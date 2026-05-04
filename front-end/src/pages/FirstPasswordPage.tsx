@@ -1,12 +1,21 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, Navigate } from 'react-router';
 import { z } from 'zod';
 import { Eye, EyeOff, User } from 'lucide-react';
 import { displayCardNumber } from '@/lib/card-number';
 import { completeFirstPasswordRequest, type PublicUser } from '@/lib/api';
+import {
+  fetchVinculosReconciliationRunId,
+  VINCULOS_RUN_QUERY_STALE_MS,
+  vinculosReconciliationRunQueryKey,
+} from '@/lib/reconcile-run-session';
+import {
+  setStoredConciliationUnit,
+  type ConciliationUnit,
+} from '@/lib/reconcile-storage';
 import { AppFooter } from '@/components/app-footer';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -58,8 +67,13 @@ const UNIT_LABEL: Record<string, string> = {
   TRACTOR: 'Tractor',
 };
 
+function unitFromUser(u: string): ConciliationUnit | null {
+  return u === 'PEDERTRACTOR' || u === 'TRACTOR' ? u : null;
+}
+
 export function FirstPasswordPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const location = useLocation();
   const state = location.state as FirstPasswordLocationState | null;
   const [showNew, setShowNew] = useState(false);
@@ -72,13 +86,27 @@ export function FirstPasswordPage() {
 
   const mutation = useMutation({
     mutationFn: completeFirstPasswordRequest,
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       if (!res.token) {
         form.setError('root', { message: 'Resposta inesperada do servidor' });
         return;
       }
       localStorage.setItem('reconcile_token', res.token);
       localStorage.setItem('reconcile_user', JSON.stringify(res.user));
+      const unit = unitFromUser(res.user.unit);
+      if (unit) {
+        setStoredConciliationUnit(unit);
+        try {
+          await queryClient.prefetchQuery({
+            queryKey: vinculosReconciliationRunQueryKey(unit),
+            queryFn: ({ signal }) =>
+              fetchVinculosReconciliationRunId(unit, signal),
+            staleTime: VINCULOS_RUN_QUERY_STALE_MS,
+          });
+        } catch {
+          /* Conciliação refaz a carga */
+        }
+      }
       navigate('/conciliacao', { replace: true });
     },
     onError: (err) => {
@@ -181,7 +209,7 @@ export function FirstPasswordPage() {
                             type='button'
                             variant='ghost'
                             size='icon-sm'
-                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:!translate-y-0'
+                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:translate-y-0!'
                             onClick={() => setShowNew((p) => !p)}
                             aria-pressed={showNew}
                             tabIndex={-1}
@@ -205,10 +233,7 @@ export function FirstPasswordPage() {
                     name='confirmPassword'
                     render={({ field }) => (
                       <FormItem className='space-y-1'>
-                        <FormLabel
-                          className={labelClass}
-                          htmlFor='confirm_pwd'
-                        >
+                        <FormLabel className={labelClass} htmlFor='confirm_pwd'>
                           Confirmar senha
                         </FormLabel>
                         <div className='relative flex h-9 items-stretch'>
@@ -227,7 +252,7 @@ export function FirstPasswordPage() {
                             type='button'
                             variant='ghost'
                             size='icon-sm'
-                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:!translate-y-0'
+                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:translate-y-0!'
                             onClick={() => setShowConfirm((p) => !p)}
                             aria-pressed={showConfirm}
                             tabIndex={-1}

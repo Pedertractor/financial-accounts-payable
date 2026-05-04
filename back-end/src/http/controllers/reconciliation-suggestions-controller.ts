@@ -17,16 +17,26 @@ import {
 } from '../../services/suggestion-pair-scoring.js';
 import {
   buildParticipatingInternalRecordIds,
+  filterRowsForSubsetByDueYmd,
   findInternalRecordSubsetsForBankAmount,
   hasBankOnlyInternalAggregatedSum,
   loadInternalOnlyPoolForSumHints,
+  todayYmdSaoPaulo,
 } from '../../services/aggregated-sum-hint.js';
+import { createReadStream } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { normalizeCounterpartyName } from '../../lib/name-normalize.js';
+import {
+  absPathFromRel,
+  contentTypeForRelPath,
+  saveManualBoletoEvidence,
+} from '../../lib/manual-boleto-storage.js';
 import {
   paymentVinculoHasDetails,
   vinculoKindFromSuggestion,
 } from '../../lib/payment-vinculo-helpers.js';
 import { prisma } from '../../lib/prisma.js';
+import { BankExtratoService } from '../../services/bank-extrato-service.js';
 
 const paramsSchema = z.object({ runId: z.string().min(1) });
 
@@ -63,6 +73,14 @@ const querySchema = z
 const confirmParamsSchema = z.object({
   runId: z.string().min(1),
   suggestionId: z.string().min(1),
+});
+
+const bankOnlyInternalSumsQuerySchema = z.object({
+  /** Filtro de vencimento (SP) da lista para vínculo manual. Padrão: hoje. */
+  manualPoolDayYmd: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
 });
 
 /** Só “Confirmar (A)” em exato, vários candidatos, ou motivos de revisão. */
@@ -497,6 +515,11 @@ export async function listRunSuggestions(
       vinculoRegistry,
       /** Quando o financeiro marcou a conta como paga. */
       paidAt: s.paidAt ? s.paidAt.toISOString() : null,
+      /** Boleto manual: há imagem de conferência anexada. */
+      manualBoletoHasEvidence: Boolean(
+        s.manualBoletoEvidenceRelPath &&
+          s.manualBoletoEvidenceRelPath.length > 0,
+      ),
       /** 2+ lançamentos do outro lado (triagem) podem somar a este valor (banco↔ERP). */
       sumAggregationAvailable,
       aggregatedErpLines:
@@ -742,6 +765,132 @@ export async function linkPaymentVinculo(
 }
 
 /**
+ * Vínculo manual com imagem opcional: “sem par interno” (só banco) ou
+ * “sem par banco” (só ERP).
+ */
+export async function linkManualBoletoVinculo(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
+  const userId = (request as FastifyRequest & { user: { sub: string } }).user
+    .sub;
+
+  if (!request.isMultipart()) {
+    throw new HttpError(
+      'Envie multipart/form-data (campo de arquivo opcional: evidence).',
+      400,
+    );
+  }
+
+  let fileBuffer: Buffer | null = null;
+  let mimetype = '';
+  let originalFileName: string | null = null;
+  for await (const part of request.parts()) {
+    if (part.type === 'file') {
+      if (part.fieldname === 'evidence' || part.fieldname === 'file') {
+        const b = await part.toBuffer();
+        mimetype = part.mimetype || '';
+        originalFileName =
+          'filename' in part && typeof part.filename === 'string'
+            ? part.filename
+            : null;
+        fileBuffer = b;
+      }
+    }
+  }
+
+  const s = await prisma.matchSuggestion.findFirst({
+    where: { id: suggestionId, runId },
+    include: {
+      bankLinks: { take: 1 },
+      internalLinks: { take: 1 },
+    },
+  });
+  if (!s) {
+    throw new HttpError('Sugestão não encontrada', 404);
+  }
+  if (s.status !== SuggestionStatus.OPEN) {
+    throw new HttpError('Esta sugestão não está pendente.', 400);
+  }
+  const bankOnlyOk =
+    s.reason === SuggestionReason.NO_INTERNAL_MATCH
+    && s.bankLinks.length > 0
+    && s.internalLinks.length === 0;
+  const internalOnlyOk =
+    s.reason === SuggestionReason.NO_BANK_MATCH
+    && s.internalLinks.length > 0
+    && s.bankLinks.length === 0;
+  if (!bankOnlyOk && !internalOnlyOk) {
+    throw new HttpError(
+      'O vínculo manual só se aplica a “sem par interno” (só banco) ou “sem par banco” (só ERP), sem o outro lado vinculado.',
+      400,
+    );
+  }
+
+  let relPath: string | null = null;
+  if (fileBuffer != null && fileBuffer.length > 0) {
+    relPath = await saveManualBoletoEvidence({
+      suggestionId: s.id,
+      buffer: fileBuffer,
+      mimetype: mimetype || 'application/octet-stream',
+      originalFileName,
+    });
+  }
+
+  const now = new Date();
+  const result = await prisma.matchSuggestion.update({
+    where: { id: s.id },
+    data: {
+      status: SuggestionStatus.APPROVED,
+      reason: SuggestionReason.BOLETO_VINCULO_OK,
+      paymentVinculoKind: PaymentVinculoKind.BOLETO,
+      manualBoletoEvidenceRelPath: relPath,
+      reviewedById: userId,
+      confirmedAt: now,
+    },
+  });
+
+  return reply.status(200).send({
+    suggestion: {
+      id: result.id,
+      status: result.status,
+      confirmedAt: result.confirmedAt?.toISOString() ?? null,
+    },
+  });
+}
+
+/**
+ * Comprovante (imagem) anexado na conferência manual de boleto.
+ */
+export async function getManualBoletoEvidence(
+  request: FastifyRequest,
+  reply: FastifyReply,
+) {
+  const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
+  const s = await prisma.matchSuggestion.findFirst({
+    where: {
+      id: suggestionId,
+      runId,
+      reason: SuggestionReason.BOLETO_VINCULO_OK,
+    },
+    select: { manualBoletoEvidenceRelPath: true },
+  });
+  const rel = s?.manualBoletoEvidenceRelPath?.trim();
+  if (!rel) {
+    throw new HttpError('Não há comprovante anexado para esta sugestão.', 404);
+  }
+  const abs = absPathFromRel(rel);
+  try {
+    await access(abs);
+  } catch {
+    throw new HttpError('Arquivo de comprovante não encontrado no servidor.', 404);
+  }
+  const stream = createReadStream(abs);
+  return reply.type(contentTypeForRelPath(rel)).send(stream);
+}
+
+/**
  * Marca sugestão OK (APPROVED) como paga; persiste `paidAt` e `paidById`.
  */
 export async function markSuggestionPaid(
@@ -782,6 +931,11 @@ export async function markSuggestionPaid(
       paidById: userId,
     },
   });
+  try {
+    await new BankExtratoService().reapplyAutoMatchForRun(runId);
+  } catch (err) {
+    console.error('reapplyAutoMatchForRun após marcar pago:', err);
+  }
   return reply.status(200).send({
     suggestion: {
       id: updated.id,
@@ -1372,6 +1526,8 @@ export async function getBankOnlyInternalSumCandidates(
   reply: FastifyReply,
 ) {
   const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
+  const { manualPoolDayYmd: manualPoolDayYmdQuery } =
+    bankOnlyInternalSumsQuerySchema.parse(request.query);
   const s = await prisma.matchSuggestion.findFirst({
     where: { id: suggestionId, runId, reason: SuggestionReason.NO_INTERNAL_MATCH },
     include: {
@@ -1444,6 +1600,11 @@ export async function getBankOnlyInternalSumCandidates(
     }
   }
   const bankDay = isoDateOrNull(bank.dueDate);
+  /** Só soma automática nesse vencimento (fuso SP); se extrato sem data, hoje. */
+  const sumDayYmd = bankDay ?? todayYmdSaoPaulo();
+  /** Pool manual filtra por este dia; padrão hoje. */
+  const manualFilterYmd = manualPoolDayYmdQuery ?? todayYmdSaoPaulo();
+  const manualPoolEligibleGlobally = pool.length >= 2;
   const bScore: {
     amount: Prisma.Decimal;
     dueDate: Date | null;
@@ -1462,32 +1623,38 @@ export async function getBankOnlyInternalSumCandidates(
     supplierNameRaw: p.supplierNameRaw,
     supplierNameNorm: p.supplierNameNorm,
   }));
+  const rowsForAuto = filterRowsForSubsetByDueYmd(rows, sumDayYmd);
   const {
     combinations: subsetIdLists,
     maxCandidatesConsidered,
     totalEligible,
     nameMatch: aggregatedNameMatch,
   } = findInternalRecordSubsetsForBankAmount(
-    rows,
+    rowsForAuto,
     targetCents,
-    bankDay,
+    sumDayYmd,
     2,
     3,
     bScore,
   );
-  const manualPool = pool.map((p) => ({
-    id: p.id,
-    supplierNameRaw: p.supplierNameRaw,
-    amount: p.amount.toString(),
-    dueDate: p.dueDate ? p.dueDate.toISOString() : null,
-    sourceSuggestionId: p.suggestionId,
-  }));
+  const manualPool = pool
+    .filter((p) => isoDateOrNull(p.dueDate) === manualFilterYmd)
+    .map((p) => ({
+      id: p.id,
+      supplierNameRaw: p.supplierNameRaw,
+      amount: p.amount.toString(),
+      dueDate: p.dueDate ? p.dueDate.toISOString() : null,
+      sourceSuggestionId: p.suggestionId,
+    }));
   const canManualVincolo = manualPool.length >= 2;
   if (totalEligible < 2) {
     return reply.status(200).send({
-      applicable: canManualVincolo,
+      applicable: canManualVincolo || manualPoolEligibleGlobally,
       targetAmount: bank.amount.toString(),
       targetCents,
+      sumDayYmd,
+      manualPoolDayYmd: manualFilterYmd,
+      manualPoolEligibleGlobally,
       bankRecord: {
         id: bank.id,
         beneficiaryNameRaw: bank.beneficiaryNameRaw,
@@ -1504,9 +1671,12 @@ export async function getBankOnlyInternalSumCandidates(
   }
   if (subsetIdLists.length === 0) {
     return reply.status(200).send({
-      applicable: canManualVincolo,
+      applicable: canManualVincolo || manualPoolEligibleGlobally,
       targetAmount: bank.amount.toString(),
       targetCents,
+      sumDayYmd,
+      manualPoolDayYmd: manualFilterYmd,
+      manualPoolEligibleGlobally,
       bankRecord: {
         id: bank.id,
         beneficiaryNameRaw: bank.beneficiaryNameRaw,
@@ -1576,6 +1746,9 @@ export async function getBankOnlyInternalSumCandidates(
     applicable: true,
     targetAmount: bank.amount.toString(),
     targetCents,
+    sumDayYmd,
+    manualPoolDayYmd: manualFilterYmd,
+    manualPoolEligibleGlobally,
     maxCandidatesConsidered,
     totalEligible,
     nameMatch: aggregatedNameMatch,

@@ -249,10 +249,12 @@ export type SuggestionListItem = {
   internalRecordIds: string[]
   externalName: string
   internalName: string
-  /** Aprovado como “sem par banco” vinculado a PIX ou TED. */
-  paymentVinculoKind?: 'PIX' | 'TED' | null
+  /** Aprovado: PIX/TED (sem par banco) ou boleto manual (sem par interno). */
+  paymentVinculoKind?: 'PIX' | 'TED' | 'BOLETO' | null
   /** Cadastro em PIX & TED (mesmo fornecedor normalizado + tipo). */
   vinculoRegistry?: { id: string; hasDetails: boolean } | null
+  /** Boleto conferido manualmente: há imagem de comprovante. */
+  manualBoletoHasEvidence?: boolean
   /** Conta marcada como paga (persistido). */
   paidAt?: string | null
   /**
@@ -313,6 +315,100 @@ export async function listRunSuggestions(
     `/reconciliation/runs/${runId}/suggestions${q ? `?${q}` : ''}`,
     init,
   )
+}
+
+export type BankExtratoStateResponse = {
+  import: null | {
+    id: string
+    referenceDate: string
+    originalFileName: string
+    createdAt: string
+  }
+  extratoLines: Array<{
+    id: string
+    rowNumber: number
+    paymentDate: string | null
+    beneficiaryRaw: string
+    amount: string
+    paymentTypeRaw: string | null
+    matchedSuggestionId: string | null
+    matchKind: 'AUTO' | 'MANUAL' | null
+    justification: string | null
+  }>
+}
+
+export async function getBankExtratoState(
+  runId: string,
+  params: { date: string },
+  init?: RequestInit,
+): Promise<BankExtratoStateResponse> {
+  const sp = new URLSearchParams({ date: params.date })
+  return apiJson(`/reconciliation/runs/${runId}/bank-extrato/state?${sp}`, init)
+}
+
+export async function uploadBankExtratoFile(
+  runId: string,
+  file: File,
+  params: { date: string; endDate?: string; referenceDate?: string },
+): Promise<{
+  importId: string
+  referenceDate: string
+  linesImported: number
+  autoMatches: number
+}> {
+  const sp = new URLSearchParams({ date: params.date })
+  if (params.endDate && params.endDate !== params.date) {
+    sp.set('endDate', params.endDate)
+  }
+  const ref = params.referenceDate ?? params.date
+  sp.set('referenceDate', ref)
+
+  const fd = new FormData()
+  fd.append('file', file)
+
+  const res = await fetch(
+    `${base}/reconciliation/runs/${runId}/bank-extrato?${sp.toString()}`,
+    {
+      method: 'POST',
+      headers: authHeader(),
+      body: fd,
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as
+    | { error?: string }
+    | {
+        importId: string
+        referenceDate: string
+        linesImported: number
+        autoMatches: number
+      }
+  if (!res.ok) {
+    const msg =
+      typeof (data as { error?: string }).error === 'string'
+        ? (data as { error: string }).error
+        : `HTTP ${res.status}`
+    throw new Error(msg)
+  }
+  return data as {
+    importId: string
+    referenceDate: string
+    linesImported: number
+    autoMatches: number
+  }
+}
+
+export async function postBankExtratoManualMatch(
+  runId: string,
+  body: {
+    extratoLineId: string
+    suggestionId: string
+    justification: string
+  },
+): Promise<{ ok: true }> {
+  return apiJson(`/reconciliation/runs/${runId}/bank-extrato/manual-match`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 }
 
 export type BankCandidateRow = {
@@ -411,6 +507,12 @@ export type BankOnlyInternalSumResponse = {
   applicable: boolean
   targetAmount: string | null
   targetCents: number | null
+  /** Vencimento (fuso SP) usado na soma automática (YYYY-MM-DD). */
+  sumDayYmd?: string
+  /** Filtro da lista manual devolvida (YYYY-MM-DD). */
+  manualPoolDayYmd?: string
+  /** Há ≥2 títulos sem par banco no run, em qualquer vencimento. */
+  manualPoolEligibleGlobally?: boolean
   maxCandidatesConsidered: number
   /** Total de títulos internos elegíveis (valor da parcela ≤ extrato), antes do truncamento. */
   totalEligible?: number
@@ -436,10 +538,18 @@ export type BankOnlyInternalSumResponse = {
 export async function getBankOnlyInternalSumCandidates(
   runId: string,
   suggestionId: string,
-  signal?: AbortSignal,
+  opts?: { signal?: AbortSignal; manualPoolDayYmd?: string },
 ): Promise<BankOnlyInternalSumResponse> {
+  const { signal, manualPoolDayYmd } = opts ?? {}
+  const q = new URLSearchParams()
+  if (manualPoolDayYmd) {
+    q.set('manualPoolDayYmd', manualPoolDayYmd)
+  }
+  const search = q.toString()
   return apiJson<BankOnlyInternalSumResponse>(
-    `/reconciliation/runs/${runId}/suggestions/${suggestionId}/bank-only-internal-sums`,
+    `/reconciliation/runs/${runId}/suggestions/${suggestionId}/bank-only-internal-sums${
+      search ? `?${search}` : ''
+    }`,
     { signal },
   )
 }
@@ -490,6 +600,42 @@ export async function linkPaymentVinculo(
     `/reconciliation/runs/${runId}/suggestions/${suggestionId}/link-payment`,
     { method: 'POST', body: JSON.stringify(body) },
   )
+}
+
+export async function linkManualBoletoVinculo(
+  runId: string,
+  suggestionId: string,
+  imageFile: File | null,
+): Promise<{
+  suggestion: { id: string; status: string; confirmedAt: string | null }
+}> {
+  const t = getStoredToken()
+  if (!t) {
+    throw new Error('Não autenticado')
+  }
+  const form = new FormData()
+  if (imageFile != null && imageFile.size > 0) {
+    form.append('evidence', imageFile)
+  }
+  const res = await fetch(
+    `${base}/reconciliation/runs/${runId}/suggestions/${suggestionId}/link-manual-boleto`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${t}` },
+      body: form,
+    },
+  )
+  const data = (await res.json().catch(() => ({}))) as
+    | { error?: string }
+    | { suggestion: { id: string; status: string; confirmedAt: string | null } }
+  if (!res.ok) {
+    const msg =
+      typeof (data as { error?: string }).error === 'string'
+        ? (data as { error: string }).error
+        : `HTTP ${res.status}`
+    throw new Error(msg)
+  }
+  return data as { suggestion: { id: string; status: string; confirmedAt: string | null } }
 }
 
 export async function markSuggestionPaid(
@@ -570,13 +716,19 @@ export async function putPaymentVinculoById(
 }
 
 export type PaymentInstructionResponse = {
-  kind: 'PIX' | 'TED'
+  kind: 'PIX' | 'TED' | 'BOLETO'
   amount: string
   amountFormatted: string
   dueDate: string | null
   hasRegistryDetails: boolean
   vinculo: PaymentVinculoNameListItem | null
   paidAt: string | null
+  /** Só boleto manual: favorecido no extrato. */
+  beneficiaryName?: string | null
+  /** true = dados do título no ERP (vínculo manual “sem par banco”). */
+  sourceFromErp?: boolean
+  /** Path relativo à API para buscar a imagem com autenticação. */
+  evidencePath?: string | null
 }
 
 export async function getPaymentVinculoInstruction(

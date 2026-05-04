@@ -51,10 +51,11 @@ enum SuggestionStatus {
   IGNORED
 }
 
-/// Vínculo manual "sem par banco" aprovado como PIX ou TED.
+/// Vínculo manual: sem par banco aprovado como PIX/TED, ou boleto só banco aprovado manualmente.
 enum PaymentVinculoKind {
   PIX
   TED
+  BOLETO
 }
 
 enum SuggestionReason {
@@ -73,6 +74,8 @@ enum SuggestionReason {
   PIX_VINCULO_OK
   /// Item aprovado como TED (vínculo manual ou confirmação de TED_CANDIDATE).
   TED_VINCULO_OK
+  /// Boleto só banco (sem par interno): aprovado com conferência manual, opcional imagem.
+  BOLETO_VINCULO_OK
   MANUAL_REVIEW_REQUIRED
 }
 
@@ -100,6 +103,12 @@ enum UserRole {
   ADMIN
 }
 
+/// Casamento linha do extrato diário × sugestão marcada como paga.
+enum BankExtratoMatchKind {
+  AUTO
+  MANUAL
+}
+
 model User {
   id           String   @id @default(cuid())
   employeeId   String   @unique
@@ -118,6 +127,7 @@ model User {
   reconciliations ReconciliationGroup[] @relation("ReconciliationReviewedBy")
   payments        PaymentMark[]
   paymentVinculosCreated PaymentVinculoName[] @relation("PaymentVinculoCreatedBy")
+  bankExtratoImports     BankExtratoImport[] @relation("BankExtratoImportedBy")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -146,7 +156,8 @@ model ReconciliationRun {
   internalRecords InternalRecord[]
   suggestions     MatchSuggestion[]
   reconciliations ReconciliationGroup[]
-  paymentMarks    PaymentMark[]
+  paymentMarks        PaymentMark[]
+  bankExtratoImports  BankExtratoImport[]
 
   @@index([referenceStartDate, referenceEndDate])
   @@index([status])
@@ -311,6 +322,8 @@ model MatchSuggestion {
   reviewedBy   User?   @relation("SuggestionReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   /// Aprovado como "sem par banco" vinculado a PIX ou TED (exibe ícone na triagem).
   paymentVinculoKind PaymentVinculoKind?
+  /// Comprovante (imagem) da conferência manual de boleto, caminho relativo a `UPLOAD_DIR`.
+  manualBoletoEvidenceRelPath String?
   /// Financeiro marcou a conta como paga (independente de PIX/TED).
   paidAt   DateTime?
   paidById String?
@@ -323,7 +336,8 @@ model MatchSuggestion {
 
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
-  reconciliationGroups ReconciliationGroup[]
+  reconciliationGroups   ReconciliationGroup[]
+  extratoSuggestionMatches BankExtratoSuggestionMatch[]
 
   @@index([runId, triageBucket])
   @@index([runId, status])
@@ -476,4 +490,77 @@ model PaymentVinculoName {
 
   @@unique([normalizedName, kind])
   @@map("PixVinculoName")
+}
+
+/// Importação de extrato diário exportado pelo banco (conferência vs contas marcadas pagas).
+model BankExtratoImport {
+  id               String @id @default(cuid())
+  runId            String
+  uploadedById     String?
+  originalFileName String
+  storagePath      String?
+  /// Dia de referência: substitui import anterior do mesmo run nesta data.
+  referenceDate    DateTime @db.Date
+  /// Janela de vencimento usada no casamento (mesma da listagem na importação); `yyyy-MM-dd`.
+  compareFromYmd   String?
+  compareToYmd     String?
+
+  run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  uploadedBy User?              @relation("BankExtratoImportedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  lines      BankExtratoLine[]
+  matches    BankExtratoSuggestionMatch[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([runId, referenceDate])
+  @@index([runId])
+  @@index([uploadedById])
+}
+
+model BankExtratoLine {
+  id                    String @id @default(cuid())
+  extratoImportId       String
+  rowNumber             Int
+  paymentDate           DateTime?
+  beneficiaryRaw        String
+  beneficiaryNorm       String?
+  documentNumberRaw     String?
+  paymentNumberRaw      String?
+  clientNumberRaw       String?
+  amount                Decimal   @db.Decimal(14, 2)
+  paymentTypeRaw        String?
+  statusRaw             String?
+  channelRaw            String?
+
+  extratoImport BankExtratoImport @relation(fields: [extratoImportId], references: [id], onDelete: Cascade)
+  match         BankExtratoSuggestionMatch?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([extratoImportId])
+  @@index([amount])
+  @@index([beneficiaryNorm])
+}
+
+/// Casamento persisted; vínculo 1–1 linha × sugestão paga dentro do mesmo import.
+model BankExtratoSuggestionMatch {
+  id               String               @id @default(cuid())
+  extratoImportId  String
+  extratoLineId    String               @unique
+  suggestionId     String
+  matchKind        BankExtratoMatchKind
+  justification    String?
+  createdById      String?
+
+  extratoImport BankExtratoImport  @relation(fields: [extratoImportId], references: [id], onDelete: Cascade)
+  extratoLine   BankExtratoLine    @relation(fields: [extratoLineId], references: [id], onDelete: Cascade)
+  suggestion    MatchSuggestion    @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([extratoImportId, suggestionId])
+  @@index([extratoImportId])
+  @@index([suggestionId])
 }

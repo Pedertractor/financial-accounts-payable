@@ -19,6 +19,19 @@ function isoDateOrNull(d: Date | null): string | null {
   return d.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
 }
 
+/** "Hoje" em YYYY-MM-DD (America/Sao_Paulo). */
+export function todayYmdSaoPaulo(now: Date = new Date()): string {
+  return now.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+}
+
+/** Só títulos cujo vencimento (no fuso do ERP) cai no dia `dayYmd`. */
+export function filterRowsForSubsetByDueYmd(
+  rows: RowForSubset[],
+  dayYmd: string,
+): RowForSubset[] {
+  return rows.filter((r) => isoDateOrNull(r.dueDate) === dayYmd);
+}
+
 export type PoolRow = {
   id: string;
   cents: number;
@@ -434,10 +447,15 @@ export function hasBankOnlyInternalAggregatedSum(
   bank: ScoringBankRow,
   internalPool: PoolRow[],
 ): boolean {
-  const res = findInternalRecordSubsetsForBankAmount(
+  const dayYmd = isoDateOrNull(bank.dueDate) ?? todayYmdSaoPaulo();
+  const rows = filterRowsForSubsetByDueYmd(
     toSubsetRows(internalPool),
+    dayYmd,
+  );
+  const res = findInternalRecordSubsetsForBankAmount(
+    rows,
     moneyDecimalToCents(bank.amount),
-    isoDateOrNull(bank.dueDate),
+    dayYmd,
     2,
     1,
     bank,
@@ -455,10 +473,15 @@ export function buildParticipatingInternalRecordIds(
 ): Set<string> {
   const out = new Set<string>();
   for (const row of openBankOnlySuggestions) {
-    const res = findInternalRecordSubsetsForBankAmount(
+    const dayYmd = isoDateOrNull(row.bank.dueDate) ?? todayYmdSaoPaulo();
+    const rows = filterRowsForSubsetByDueYmd(
       toSubsetRows(internalPool),
+      dayYmd,
+    );
+    const res = findInternalRecordSubsetsForBankAmount(
+      rows,
       moneyDecimalToCents(row.bank.amount),
-      isoDateOrNull(row.bank.dueDate),
+      dayYmd,
       2,
       8,
       row.bank,

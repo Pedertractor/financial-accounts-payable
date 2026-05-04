@@ -1,12 +1,18 @@
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { z } from 'zod';
 import { Eye, EyeOff } from 'lucide-react';
 import { displayCardNumber, parseCardNumberInput } from '@/lib/card-number';
 import { loginRequest } from '@/lib/api';
+import {
+  fetchVinculosReconciliationRunId,
+  VINCULOS_RUN_QUERY_STALE_MS,
+  vinculosReconciliationRunQueryKey,
+} from '@/lib/reconcile-run-session';
+import { setStoredConciliationUnit } from '@/lib/reconcile-storage';
 import { AppFooter } from '@/components/app-footer';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -65,6 +71,7 @@ const labelClass = 'text-foreground/90 text-sm font-medium leading-none';
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [showPassword, setShowPassword] = useState(false);
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
@@ -73,9 +80,12 @@ export function LoginPage() {
 
   const loginMutation = useMutation({
     mutationFn: loginRequest,
-    onSuccess: (res) => {
+    onSuccess: async (res, variables) => {
       if (res.firstLoginRequired) {
-        navigate('/primeiro-acesso', { replace: true, state: { user: res.user } });
+        navigate('/primeiro-acesso', {
+          replace: true,
+          state: { user: res.user },
+        });
         return;
       }
       if (!res.token) {
@@ -86,6 +96,18 @@ export function LoginPage() {
       }
       localStorage.setItem('reconcile_token', res.token);
       localStorage.setItem('reconcile_user', JSON.stringify(res.user));
+      const unit = variables.unit;
+      setStoredConciliationUnit(unit);
+      try {
+        await queryClient.prefetchQuery({
+          queryKey: vinculosReconciliationRunQueryKey(unit),
+          queryFn: ({ signal }) =>
+            fetchVinculosReconciliationRunId(unit, signal),
+          staleTime: VINCULOS_RUN_QUERY_STALE_MS,
+        });
+      } catch {
+        /* a página de conciliação refaz a carga; não bloquear o login */
+      }
       navigate('/conciliacao', { replace: true });
     },
     onError: (err) => {
@@ -226,7 +248,7 @@ export function LoginPage() {
                             type='button'
                             variant='ghost'
                             size='icon-sm'
-                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:!translate-y-0'
+                            className='text-muted-foreground hover:text-foreground absolute top-0 right-0.5 flex h-9 w-7 items-center justify-center active:translate-y-0!'
                             onClick={() => setShowPassword((p) => !p)}
                             aria-pressed={showPassword}
                             tabIndex={-1}

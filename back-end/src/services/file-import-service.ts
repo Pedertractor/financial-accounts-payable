@@ -4,7 +4,7 @@ import { extname, join, resolve } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import * as XLSX from 'xlsx';
 import { Prisma } from '../generated/prisma/client.js';
-import { SourceType, UploadStatus, UnitType } from '../generated/prisma/enums.js';
+import { RunStatus, SourceType, UploadStatus, UnitType } from '../generated/prisma/enums.js';
 import { env } from '../env/index.js';
 import { HttpError } from '../http/erros/index.js';
 import {
@@ -769,27 +769,42 @@ export class FileImportService {
   /**
    * Execução mais recente do usuário para a empresa: prioriza run com upload mais recente;
    * senão a execução mais recente (ex.: rascunho sem arquivo ainda).
+   * Uma única ida ao banco (antes: até 2 consultas sequenciais).
    */
   async getLatestRunForUser(userId: string, unit: UnitType) {
-    const selectRun = {
-      id: true,
-      title: true,
-      status: true,
-      unit: true,
-    } as const;
-    const lastUpload = await prisma.fileUpload.findFirst({
-      where: { run: { is: { createdById: userId, unit } } },
-      orderBy: { updatedAt: 'desc' },
-      select: { run: { select: selectRun } },
-    });
-    if (lastUpload?.run) {
-      return lastUpload.run;
-    }
-    return prisma.reconciliationRun.findFirst({
-      where: { createdById: userId, unit },
-      orderBy: { createdAt: 'desc' },
-      select: selectRun,
-    });
+    type Row = {
+      id: string;
+      title: string | null;
+      status: RunStatus;
+      unit: UnitType;
+    };
+    const rows = await prisma.$queryRaw<Row[]>(Prisma.sql`
+      WITH upload_pick AS (
+        SELECT r.id, r.title, r.status, r.unit
+        FROM "FileUpload" fu
+        INNER JOIN "ReconciliationRun" r ON r.id = fu."runId"
+        WHERE r."createdById" = ${userId}
+          AND r.unit = ${unit}::"UnitType"
+        ORDER BY fu."updatedAt" DESC
+        LIMIT 1
+      ),
+      fallback_pick AS (
+        SELECT r.id, r.title, r.status, r.unit
+        FROM "ReconciliationRun" r
+        WHERE r."createdById" = ${userId}
+          AND r.unit = ${unit}::"UnitType"
+        ORDER BY r."createdAt" DESC
+        LIMIT 1
+      )
+      SELECT id, title, status, unit FROM (
+        SELECT id, title, status, unit FROM upload_pick
+        UNION ALL
+        SELECT id, title, status, unit FROM fallback_pick
+        WHERE NOT EXISTS (SELECT 1 FROM upload_pick)
+      ) AS resolved
+      LIMIT 1
+    `);
+    return rows[0] ?? null;
   }
 
   /**

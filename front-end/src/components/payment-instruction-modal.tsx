@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { Loader2 } from 'lucide-react'
@@ -12,6 +12,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
+  authHeader,
+  getApiBase,
   getPaymentVinculoInstruction,
   markSuggestionPaid,
   type PaymentInstructionResponse,
@@ -94,6 +96,98 @@ function ReadField({
       >
         {children}
       </div>
+    </div>
+  )
+}
+
+function BoletoEvidenceImage({ path }: { path: string }) {
+  const [state, setState] = useState<{
+    url: string
+    isPdf: boolean
+  } | null>(null)
+  const [err, setErr] = useState(false)
+  useEffect(() => {
+    setState(null)
+    setErr(false)
+    let blobUrl: string | null = null
+    let cancel = false
+    const full = `${getApiBase()}${path.startsWith('/') ? path : `/${path}`}`
+    void (async () => {
+      try {
+        const res = await fetch(full, { headers: authHeader() })
+        if (!res.ok) {
+          if (!cancel) {
+            setErr(true)
+          }
+          return
+        }
+        const blob = await res.blob()
+        if (cancel) {
+          return
+        }
+        const ct = res.headers.get('content-type') ?? blob.type
+        const isPdf =
+          ct.includes('application/pdf') ||
+          blob.type === 'application/pdf' ||
+          full.toLowerCase().includes('.pdf')
+        blobUrl = URL.createObjectURL(blob)
+        setState({ url: blobUrl, isPdf })
+      } catch {
+        if (!cancel) {
+          setErr(true)
+        }
+      }
+    })()
+    return () => {
+      cancel = true
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl)
+      }
+    }
+  }, [path])
+  if (err) {
+    return (
+      <p className="text-destructive text-sm" role="alert">
+        Não foi possível carregar o comprovante.
+      </p>
+    )
+  }
+  if (state == null) {
+    return (
+      <div className="text-muted-foreground flex items-center gap-2 text-sm">
+        <Loader2 className="size-4 shrink-0 animate-spin" />
+        Carregando comprovante…
+      </div>
+    )
+  }
+  if (state.isPdf) {
+    return (
+      <div className="space-y-1.5">
+        <div className="border-border/60 bg-muted/30 h-[min(50vh,28rem)] w-full min-h-[200px] overflow-hidden rounded-md border">
+          <iframe
+            title="Comprovante em PDF"
+            src={state.url}
+            className="h-full w-full border-0"
+          />
+        </div>
+        <a
+          href={state.url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-primary text-xs font-medium underline underline-offset-2"
+        >
+          Abrir PDF em nova aba
+        </a>
+      </div>
+    )
+  }
+  return (
+    <div className="border-border/60 bg-muted/20 max-h-[min(50vh,28rem)] overflow-auto rounded-md border p-2">
+      <img
+        src={state.url}
+        alt="Comprovante da conferência"
+        className="mx-auto max-w-full object-contain"
+      />
     </div>
   )
 }
@@ -186,6 +280,7 @@ export function PaymentInstructionModal({
       setPaidDialogOpen(false)
       if (runId) {
         void queryClient.invalidateQueries({ queryKey: ['reconciliation-suggestions'] })
+        void queryClient.invalidateQueries({ queryKey: ['bank-extrato-state', runId] })
       }
       void queryClient.invalidateQueries({
         queryKey: ['payment-instruction', runId, suggestionId],
@@ -195,9 +290,11 @@ export function PaymentInstructionModal({
 
   const title = !data
     ? 'Instrução de pagamento'
-    : data.kind === 'TED'
-      ? 'Instrução de pagamento TED'
-      : 'Instrução de pagamento PIX'
+    : data.kind === 'BOLETO'
+      ? 'Vínculo manual'
+      : data.kind === 'TED'
+        ? 'Instrução de pagamento TED'
+        : 'Instrução de pagamento PIX'
 
   return (
     <>
@@ -223,7 +320,8 @@ export function PaymentInstructionModal({
             </p>
           ) : data ? (
             <div className="mt-4 space-y-4">
-              {!data.hasRegistryDetails && (
+              {!data.hasRegistryDetails
+                && data.kind !== 'BOLETO' ? (
                 <p
                   className={cn(
                     'rounded-md border border-amber-200/80 bg-amber-50 px-3 py-2 text-xs',
@@ -242,8 +340,27 @@ export function PaymentInstructionModal({
                   : para {data.kind}, preencha os campos obrigatórios nessa tela; os
                   ícones na conciliação ficarão ativos após o cadastro.
                 </p>
-              )}
+              ) : null}
+              {data.kind === 'BOLETO' && !data.hasRegistryDetails ? (
+                <p
+                  className="text-muted-foreground border-border/50 bg-muted/30 rounded-md border px-3 py-2 text-xs"
+                  role="status"
+                >
+                  Nenhuma imagem de comprovante foi anexada na conferência.
+                </p>
+              ) : null}
               <div className="space-y-1.5 text-sm">
+                {data.kind === 'BOLETO' && data.beneficiaryName != null
+                  && data.beneficiaryName.length > 0 ? (
+                  <p>
+                    <span className="text-muted-foreground">
+                      {data.sourceFromErp ? 'Fornecedor (ERP): ' : 'Favorecido: '}
+                    </span>
+                    <span className="font-medium wrap-anywhere">
+                      {data.beneficiaryName}
+                    </span>
+                  </p>
+                ) : null}
                 <p>
                   <span className="text-muted-foreground">Vencimento: </span>
                   <span className="font-medium">
@@ -257,12 +374,22 @@ export function PaymentInstructionModal({
                   </span>
                 </p>
               </div>
-              <div>
-                <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">
-                  {data.kind === 'PIX' ? 'Dados do PIX' : 'Dados do TED'}
-                </p>
-                <VinculoReadBlock d={data} />
-              </div>
+              {data.kind === 'BOLETO' && data.evidencePath ? (
+                <div>
+                  <p className="text-muted-foreground mb-1.5 text-xs font-medium uppercase">
+                    Comprovante
+                  </p>
+                  <BoletoEvidenceImage path={data.evidencePath} />
+                </div>
+              ) : null}
+              {data.kind === 'PIX' || data.kind === 'TED' ? (
+                <div>
+                  <p className="text-muted-foreground mb-1 text-xs font-medium uppercase">
+                    {data.kind === 'PIX' ? 'Dados do PIX' : 'Dados do TED'}
+                  </p>
+                  <VinculoReadBlock d={data} />
+                </div>
+              ) : null}
             </div>
           ) : null}
           {data != null && data.paidAt ? (

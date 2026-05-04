@@ -78,7 +78,7 @@ function PaymentVinculoEditModalForm({
   )
 
   const form = useForm<FormModel>({
-    resolver: zodResolver(schema) as Resolver<FormModel>,
+    resolver: zodResolver(schema) as unknown as Resolver<FormModel>,
     defaultValues: emptyForm,
     mode: 'onTouched',
   })

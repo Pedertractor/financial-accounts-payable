@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import { BoletoManualVinculoModal } from '@/components/boleto-manual-vinculo-modal';
 import {
   AlertTriangle,
+  Calendar as CalendarIcon,
   Landmark,
   Lightbulb,
   Link2,
@@ -12,6 +16,12 @@ import {
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Calendar } from '@/components/ui/calendar';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import {
   Dialog,
   DialogContent,
@@ -72,6 +82,21 @@ function formatDatePt(iso: string | null | undefined): string {
   }
 }
 
+function ymdSaoPauloNow(): string {
+  return new Date().toLocaleDateString('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+  });
+}
+
+function ymdToLocalDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatYmdLongPt(ymd: string): string {
+  return format(ymdToLocalDate(ymd), 'PPP', { locale: ptBR });
+}
+
 function centsFromAmountString(s: string | null | undefined): number {
   if (s == null || s === '') {
     return Number.NaN;
@@ -84,18 +109,19 @@ function centsFromAmountString(s: string | null | undefined): number {
 }
 
 const REASON_LABEL: Record<string, string> = {
-  EXACT_NAME_VALUE: 'NOME E VALOR EXATOS',
-  FUZZY_NAME_MATCH: 'NOME APROXIMADO',
-  VALUE_ONLY: 'SÓ VALOR',
-  MULTIPLE_CANDIDATES: 'VÁRIOS CANDIDATOS',
-  AGGREGATED_CANDIDATE: 'AGREGADO',
-  NO_INTERNAL_MATCH: 'SEM PAR INTERNO',
-  NO_BANK_MATCH: 'SEM PAR BANCO',
-  PIX_CANDIDATE: 'PIX (SUGESTÃO)',
-  TED_CANDIDATE: 'TED (SUGESTÃO)',
+  EXACT_NAME_VALUE: 'Nome e valor exatos',
+  FUZZY_NAME_MATCH: 'Nome aproximado',
+  VALUE_ONLY: 'Só valor',
+  MULTIPLE_CANDIDATES: 'Vários candidatos',
+  AGGREGATED_CANDIDATE: 'Agregado',
+  NO_INTERNAL_MATCH: 'Sem par interno',
+  NO_BANK_MATCH: 'Sem par banco',
+  PIX_CANDIDATE: 'PIX (sugestão)',
+  TED_CANDIDATE: 'TED (sugestão)',
   PIX_VINCULO_OK: 'PIX',
   TED_VINCULO_OK: 'TED',
-  MANUAL_REVIEW_REQUIRED: 'REVISÃO MANUAL',
+  BOLETO_VINCULO_OK: 'Conferência manual',
+  MANUAL_REVIEW_REQUIRED: 'Revisão manual',
 };
 
 const REASON_BADGE_STYLES: Record<
@@ -103,35 +129,35 @@ const REASON_BADGE_STYLES: Record<
   { label: string; className: string }
 > = {
   EXACT_NAME_VALUE: {
-    label: 'NOME E VALOR EXATOS',
+    label: 'Nome e valor exatos',
     className: 'text-emerald-800 dark:text-emerald-200 border-emerald-200/80',
   },
   FUZZY_NAME_MATCH: {
-    label: 'NOME APROXIMADO',
+    label: 'Nome aproximado',
     className: 'text-sky-800 dark:text-sky-200 border-sky-200/80',
   },
   VALUE_ONLY: {
-    label: 'SÓ VALOR',
+    label: 'Só valor',
     className: 'text-emerald-800 dark:text-emerald-200 border-emerald-200/60',
   },
   MULTIPLE_CANDIDATES: {
-    label: 'VÁRIOS CANDIDATOS',
+    label: 'Vários candidatos',
     className: 'text-amber-900 dark:text-amber-200 border-amber-300/80',
   },
   AGGREGATED_CANDIDATE: {
-    label: 'AGREGADO',
+    label: 'Agregado',
     className: 'text-violet-800 dark:text-violet-200 border-violet-200/60',
   },
   NO_INTERNAL_MATCH: {
-    label: 'SEM PAR INTERNO',
+    label: 'Sem par interno',
     className: 'text-red-800 dark:text-red-200 border-rose-200/80',
   },
   NO_BANK_MATCH: {
-    label: 'SEM PAR BANCO',
+    label: 'Sem par banco',
     className: 'text-red-800 dark:text-red-200 border-rose-200/80',
   },
   PIX_CANDIDATE: {
-    label: 'PIX (SUGESTÃO)',
+    label: 'PIX (sugestão)',
     className: 'text-teal-800 dark:text-teal-200 border-teal-200/80',
   },
   PIX_VINCULO_OK: {
@@ -139,15 +165,19 @@ const REASON_BADGE_STYLES: Record<
     className: 'text-emerald-800 dark:text-emerald-200 border-emerald-200/80',
   },
   TED_CANDIDATE: {
-    label: 'TED (SUGESTÃO)',
+    label: 'TED (sugestão)',
     className: 'text-cyan-800 dark:text-cyan-200 border-cyan-200/80',
   },
   TED_VINCULO_OK: {
     label: 'TED',
     className: 'text-sky-800 dark:text-sky-200 border-sky-200/80',
   },
+  BOLETO_VINCULO_OK: {
+    label: 'Conferência manual',
+    className: 'text-orange-800 dark:text-orange-200 border-orange-200/80',
+  },
   MANUAL_REVIEW_REQUIRED: {
-    label: 'REVISÃO MANUAL',
+    label: 'Revisão manual',
     className: 'text-amber-900 dark:text-amber-200 border-amber-300/80',
   },
 };
@@ -169,18 +199,18 @@ function MotivoReasonBadges({ row }: { row: SuggestionListItem }) {
   if (categoria === 'revisao') {
     return (
       <div className='mb-1 flex min-h-8 flex-wrap items-end gap-2'>
-        <span className='text-muted-foreground text-[0.65rem] font-bold tracking-wider uppercase'>
+        <span className='text-muted-foreground text-[0.65rem] font-semibold tracking-tight'>
           Motivo / diferença
         </span>
         <div className='flex flex-wrap items-center gap-2'>
           <Badge
             variant='secondary'
-            className='font-mono text-[0.65rem] tracking-tight border-amber-300/80 bg-amber-50 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/50 dark:text-amber-200'
+            className='text-[0.65rem] font-medium tracking-tight border-amber-300/80 bg-amber-50 text-amber-950 dark:border-amber-800/50 dark:bg-amber-950/50 dark:text-amber-200'
           >
             Revisão
           </Badge>
           <span
-            className='text-muted-foreground text-[0.6rem] font-mono'
+            className='text-muted-foreground text-[0.6rem] font-medium'
             title={detalheLabel}
           >
             {detalheLabel}
@@ -196,14 +226,14 @@ function MotivoReasonBadges({ row }: { row: SuggestionListItem }) {
   }
   return (
     <div className='mb-1 flex min-h-8 flex-wrap items-end gap-2'>
-      <span className='text-muted-foreground text-[0.65rem] font-bold tracking-wider uppercase'>
+      <span className='text-muted-foreground text-[0.65rem] font-semibold tracking-tight'>
         Motivo / diferença
       </span>
       <div className='flex flex-wrap items-center gap-2'>
         <Badge
           variant='secondary'
           className={cn(
-            'font-mono text-[0.65rem] font-medium tracking-tight',
+            'text-[0.65rem] font-medium tracking-tight',
             REASON_BADGE_STYLES[row.reason]?.className,
           )}
         >
@@ -257,7 +287,11 @@ function namesDiffer(r: SuggestionListItem): boolean {
 type OccurrenceLevel = 'info' | 'caution' | 'critical';
 
 function getOccurrenceLevel(r: SuggestionListItem): OccurrenceLevel {
-  if (r.reason === 'PIX_VINCULO_OK' || r.reason === 'TED_VINCULO_OK') {
+  if (
+    r.reason === 'PIX_VINCULO_OK' ||
+    r.reason === 'TED_VINCULO_OK' ||
+    r.reason === 'BOLETO_VINCULO_OK'
+  ) {
     return 'info';
   }
   if (r.reason === 'PIX_CANDIDATE' || r.reason === 'TED_CANDIDATE') {
@@ -408,6 +442,16 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
       ],
     };
   }
+  if (r.reason === 'BOLETO_VINCULO_OK') {
+    return {
+      parts: [
+        {
+          type: 'text',
+          t: 'Aprovado por vínculo manual (pode incluir comprovante anexado). A linha está liberada para marcar como paga.',
+        },
+      ],
+    };
+  }
   if (r.explanation && r.explanation.trim() !== '') {
     return { parts: [{ type: 'text', t: r.explanation.trim() }] };
   }
@@ -514,10 +558,17 @@ function BankOnlyInternalSumPanel({
   const isOpen = st === 'OPEN' || st == null;
   /** Só 1/2/3 alinhado ao `Link2` em Motivo: sem isto, só o "+" (manual). */
   const suggestionsAllowed = row.sumAggregationAvailable === true;
+  const [manualPoolDayYmd, setManualPoolDayYmd] = useState(() =>
+    ymdSaoPauloNow(),
+  );
+  const [calPickerOpen, setCalPickerOpen] = useState(false);
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['bank-only-internal-sums', runId, row.id],
+    queryKey: ['bank-only-internal-sums', runId, row.id, manualPoolDayYmd],
     queryFn: ({ signal }) =>
-      getBankOnlyInternalSumCandidates(runId, row.id, signal),
+      getBankOnlyInternalSumCandidates(runId, row.id, {
+        signal,
+        manualPoolDayYmd,
+      }),
     enabled: open && row.reason === 'NO_INTERNAL_MATCH' && isOpen,
   });
   /** Ordenado por conf. de nome; remove conjuntos repetidos (mesmos títulos) — 1, 2 ou 3 abas consoante haja opções distintas. */
@@ -560,8 +611,9 @@ function BankOnlyInternalSumPanel({
     () => new Set(),
   );
 
-  /** Painel de seleção manual: visível com "+" também quando já existem abas automáticas. */
-  const showManual = manualOpen && hasManual;
+  const manualPoolEligibleGlobally = data?.manualPoolEligibleGlobally === true;
+  /** Painel de seleção manual: após "+", com opção de trocar o vencimento no calendário. */
+  const showManualPanel = manualOpen && manualPoolEligibleGlobally;
 
   const nCombo = distinctComboOptions.length;
   const safeComboIdx = nCombo === 0 ? 0 : Math.min(comboIdx, nCombo - 1);
@@ -619,16 +671,26 @@ function BankOnlyInternalSumPanel({
 
   const b = data?.bankRecord;
   const dayLabel = formatDatePt(b?.dueDate ?? row.dueDate);
+  const autoDayLabel =
+    data?.sumDayYmd != null ? formatYmdLongPt(data.sumDayYmd) : dayLabel;
   const hasAutoCombos = suggestionsAllowed && distinctComboOptions.length > 0;
   const showBlock =
     data != null &&
     data.applicable &&
     data.bankRecord != null &&
-    (hasAutoCombos || hasManual);
+    (hasAutoCombos || hasManual || manualPoolEligibleGlobally);
   const showNoSumHint =
-    data != null && !hasAutoCombos && !hasManual && !isLoading && !isError;
+    data != null &&
+    !hasAutoCombos &&
+    !hasManual &&
+    !manualPoolEligibleGlobally &&
+    !isLoading &&
+    !isError;
   const canVincularAuto = Boolean(selectedCombo) && !mutation.isPending;
   const canVincularManual = sumMatchManual && !mutation.isPending;
+
+  const showAutomaticErpBlock =
+    !manualOpen && distinctComboOptions.length > 0 && selectedCombo != null;
 
   return (
     <div className='w-full space-y-3'>
@@ -650,10 +712,11 @@ function BankOnlyInternalSumPanel({
       ) : null}
       {showNoSumHint ? (
         <p className='text-muted-foreground text-center text-sm' role='status'>
-          {dayLabel !== '—' ? (
+          {autoDayLabel !== '—' ? (
             <>
-              Não há títulos internos (sem par banco) suficientes no dia{' '}
-              {dayLabel} para completar a soma com este extrato.{' '}
+              Não há títulos internos (sem par banco) com vencimento no dia{' '}
+              {autoDayLabel} para completar a soma automática com este
+              extrato.{' '}
             </>
           ) : (
             <>
@@ -666,71 +729,101 @@ function BankOnlyInternalSumPanel({
       {showBlock && b ? (
         <div className='space-y-3'>
           {((suggestionsAllowed && distinctComboOptions.length > 0) ||
-            hasManual) && (
-            <div
-              className='flex min-w-0 flex-wrap items-center justify-start gap-1.5'
-              role='tablist'
-              aria-label='Sugestões e vínculo manual'
-            >
-              {distinctComboOptions.map((c, i) => {
-                const isActive = !showManual && safeComboIdx === i;
-                return (
+            hasManual ||
+            manualPoolEligibleGlobally) && (
+            <div className='flex w-full min-w-0 flex-wrap items-center justify-between gap-2'>
+              <div
+                className='flex min-w-0 flex-1 flex-wrap items-center justify-start gap-1.5'
+                role='tablist'
+                aria-label='Sugestões e vínculo manual'
+              >
+                {distinctComboOptions.map((c, i) => {
+                  const isActive = !manualOpen && safeComboIdx === i;
+                  return (
+                    <Button
+                      key={c.internalRecordIds.join('-')}
+                      type='button'
+                      role='tab'
+                      variant={isActive ? 'default' : 'outline'}
+                      size='sm'
+                      className='h-8 min-w-0 shrink-0 px-3 text-sm font-medium'
+                      aria-selected={isActive}
+                      id={`bank-only-combo-tab-${i}`}
+                      title={`${c.internals.length} título(s) · conf. nome méd. ${c.avgNameScore}%`}
+                      aria-label={`Sugestão ${i + 1}`}
+                      onClick={() => {
+                        setManualOpen(false);
+                        setComboIdx(i);
+                      }}
+                    >
+                      {i + 1}
+                    </Button>
+                  );
+                })}
+                {manualPoolEligibleGlobally ? (
                   <Button
-                    key={c.internalRecordIds.join('-')}
                     type='button'
-                    role='tab'
-                    variant={isActive ? 'default' : 'outline'}
-                    size='sm'
-                    className='h-8 min-w-0 shrink-0 px-3 text-sm font-medium'
-                    aria-selected={isActive}
-                    id={`bank-only-combo-tab-${i}`}
-                    title={`${c.internals.length} título(s) · conf. nome méd. ${c.avgNameScore}%`}
-                    aria-label={`Sugestão ${i + 1}`}
-                    onClick={() => {
-                      setManualOpen(false);
-                      setComboIdx(i);
-                    }}
+                    size='icon'
+                    variant={manualOpen ? 'default' : 'outline'}
+                    className='h-8 w-8 shrink-0 border-dashed'
+                    title='Vincular manual'
+                    aria-label='Seleção manual: marcar títulos'
+                    aria-pressed={manualOpen}
+                    onClick={() => setManualOpen((v) => !v)}
                   >
-                    {i + 1}
+                    <Plus className='size-4' strokeWidth={2.5} aria-hidden />
                   </Button>
-                );
-              })}
-              {hasManual ? (
-                <Button
-                  type='button'
-                  size='icon'
-                  variant={showManual ? 'default' : 'outline'}
-                  className='h-8 w-8 shrink-0 border-dashed'
-                  title='Vincular manual'
-                  aria-label='Seleção manual: marcar títulos'
-                  aria-pressed={showManual}
-                  onClick={() => {
-                    setManualOpen(true);
-                  }}
-                >
-                  <Plus className='size-4' strokeWidth={2.5} aria-hidden />
-                </Button>
+                ) : null}
+              </div>
+              {manualOpen && manualPoolEligibleGlobally ? (
+                <Popover open={calPickerOpen} onOpenChange={setCalPickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      className='text-foreground h-8 shrink-0 gap-1.5 px-2.5'
+                      title='Vencimentos (lista manual)'
+                      aria-label='Escolher dia para títulos na seleção manual'
+                    >
+                      <CalendarIcon
+                        className='text-muted-foreground size-3.5'
+                        aria-hidden
+                      />
+                      <span className='max-w-34 truncate text-xs'>
+                        {formatYmdLongPt(manualPoolDayYmd)}
+                      </span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    className='w-auto p-2'
+                    align='end'
+                    side='bottom'
+                    sideOffset={6}
+                  >
+                    <Calendar
+                      mode='single'
+                      numberOfMonths={1}
+                      className='p-0'
+                      selected={ymdToLocalDate(manualPoolDayYmd)}
+                      onSelect={(d) => {
+                        if (!d) {
+                          return;
+                        }
+                        const ymd = d.toLocaleDateString('en-CA', {
+                          timeZone: 'America/Sao_Paulo',
+                        });
+                        setManualPoolDayYmd(ymd);
+                        setCalPickerOpen(false);
+                        setSelectedManual(new Set());
+                      }}
+                    />
+                  </PopoverContent>
+                </Popover>
               ) : null}
             </div>
           )}
 
-          {showManual && hasManual ? (
-            <ManualSomaSemParBanco
-              b={b}
-              sortedManual={sortedManual}
-              sumManualCents={sumManualCents}
-              selectedManual={selectedManual}
-              onToggle={toggleManual}
-              onVincular={() => {
-                mutation.mutate([...selectedManual]);
-              }}
-              canVincular={canVincularManual}
-              isPending={mutation.isPending}
-              resolveErr={resolveErr}
-            />
-          ) : null}
-
-          {!showManual && distinctComboOptions.length > 0 && selectedCombo ? (
+          {showAutomaticErpBlock ? (
             <div className='space-y-3'>
               <div
                 id='bank-only-erp-table'
@@ -739,23 +832,28 @@ function BankOnlyInternalSumPanel({
                 className={TEN_ROWS_SCROLL_CLASS}
               >
                 <div className='border-border/60 w-full min-w-0 max-w-4xl rounded-lg border sm:mx-auto'>
-                  <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+                  <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-tight'>
                     ERP (fornecedor) — soma = {formatBrlAmount(b.amount)}
+                    {data?.sumDayYmd ? (
+                      <span className='ml-1 font-normal normal-case'>
+                        · venc. {formatYmdLongPt(data.sumDayYmd)}
+                      </span>
+                    ) : null}
                   </p>
                   <Table>
                     <TableHeader>
                       <TableRow className='hover:bg-transparent'>
                         <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs' />
-                        <TableHead className='text-[0.65rem] uppercase'>
+                        <TableHead className='text-[0.65rem] font-medium'>
                           Fornecedor
                         </TableHead>
-                        <TableHead className='min-w-18 text-[0.65rem] uppercase'>
+                        <TableHead className='min-w-18 text-[0.65rem] font-medium'>
                           Valor
                         </TableHead>
-                        <TableHead className='w-32 min-w-24 text-[0.65rem] uppercase'>
+                        <TableHead className='w-32 min-w-24 text-[0.65rem] font-medium'>
                           Vencimento
                         </TableHead>
-                        <TableHead className='w-14 text-[0.65rem] uppercase'>
+                        <TableHead className='w-14 text-[0.65rem] font-medium'>
                           Conf. nome
                         </TableHead>
                       </TableRow>
@@ -823,6 +921,23 @@ function BankOnlyInternalSumPanel({
               </div>
             </div>
           ) : null}
+
+          {showManualPanel ? (
+            <ManualSomaSemParBanco
+              b={b}
+              sortedManual={sortedManual}
+              sumManualCents={sumManualCents}
+              selectedManual={selectedManual}
+              onToggle={toggleManual}
+              onVincular={() => {
+                mutation.mutate([...selectedManual]);
+              }}
+              canVincular={canVincularManual}
+              isPending={mutation.isPending}
+              resolveErr={resolveErr}
+              listDayYmd={manualPoolDayYmd}
+            />
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -839,8 +954,10 @@ function ManualSomaSemParBanco({
   canVincular,
   isPending,
   resolveErr,
+  listDayYmd,
 }: {
   b: { amount: string };
+  listDayYmd: string;
   sortedManual: {
     id: string;
     supplierNameRaw: string;
@@ -877,47 +994,60 @@ function ManualSomaSemParBanco({
             <TableHeader>
               <TableRow className='hover:bg-transparent'>
                 <TableHead className='w-8 px-1' />
-                <TableHead className='text-[0.65rem] uppercase'>
+                <TableHead className='text-[0.65rem] font-medium'>
                   Fornecedor
                 </TableHead>
-                <TableHead className='min-w-18 text-[0.65rem] uppercase'>
+                <TableHead className='min-w-18 text-[0.65rem] font-medium'>
                   Valor
                 </TableHead>
-                <TableHead className='w-24 text-[0.65rem] uppercase'>
+                <TableHead className='w-24 text-[0.65rem] font-medium'>
                   Venc.
                 </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedManual.map((r) => (
-                <TableRow
-                  key={r.id}
-                  className='cursor-pointer'
-                  onClick={() => onToggle(r.id)}
-                >
+              {sortedManual.length === 0 ? (
+                <TableRow>
                   <TableCell
-                    className='w-8 px-1'
-                    onClick={(e) => e.stopPropagation()}
+                    colSpan={4}
+                    className='text-muted-foreground py-6 text-center text-sm'
                   >
-                    <input
-                      type='checkbox'
-                      className='border-input accent-primary size-3.5 cursor-pointer rounded border'
-                      checked={selectedManual.has(r.id)}
-                      onChange={() => onToggle(r.id)}
-                      aria-label={`Incluir ${r.supplierNameRaw}`}
-                    />
-                  </TableCell>
-                  <TableCell className='text-foreground/90 min-w-0 text-sm wrap-anywhere'>
-                    {r.supplierNameRaw}
-                  </TableCell>
-                  <TableCell className='whitespace-nowrap text-sm'>
-                    {formatBrlAmount(r.amount)}
-                  </TableCell>
-                  <TableCell className='whitespace-nowrap text-xs text-muted-foreground'>
-                    {formatDatePt(r.dueDate)}
+                    Nenhum título sem par banco com vencimento em{' '}
+                    {formatYmdLongPt(listDayYmd)}. Escolha outro dia no
+                    calendário.
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : (
+                sortedManual.map((r) => (
+                  <TableRow
+                    key={r.id}
+                    className='cursor-pointer'
+                    onClick={() => onToggle(r.id)}
+                  >
+                    <TableCell
+                      className='w-8 px-1'
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type='checkbox'
+                        className='border-input accent-primary size-3.5 cursor-pointer rounded border'
+                        checked={selectedManual.has(r.id)}
+                        onChange={() => onToggle(r.id)}
+                        aria-label={`Incluir ${r.supplierNameRaw}`}
+                      />
+                    </TableCell>
+                    <TableCell className='text-foreground/90 min-w-0 text-sm wrap-anywhere'>
+                      {r.supplierNameRaw}
+                    </TableCell>
+                    <TableCell className='whitespace-nowrap text-sm'>
+                      {formatBrlAmount(r.amount)}
+                    </TableCell>
+                    <TableCell className='whitespace-nowrap text-xs text-muted-foreground'>
+                      {formatDatePt(r.dueDate)}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </div>
@@ -1013,7 +1143,7 @@ function MultipleCandidatesSection({
 
   return (
     <div className='space-y-3'>
-      <div className='text-muted-foreground flex items-center gap-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+      <div className='text-muted-foreground flex items-center gap-2 text-[0.65rem] font-semibold tracking-tight'>
         Candidatos (mesmo valor e vencimento)
       </div>
       <p className='text-muted-foreground text-xs'>
@@ -1045,20 +1175,20 @@ function MultipleCandidatesSection({
           role='radiogroup'
           aria-label='Escolher a linha do extrato bancário'
         >
-          <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+          <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-tight'>
             Extrato bancário
           </p>
           <Table>
             <TableHeader>
               <TableRow className='hover:bg-transparent'>
                 <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs' />
-                <TableHead className='text-[0.65rem] uppercase'>
+                <TableHead className='text-[0.65rem] font-medium'>
                   Nome (banco)
                 </TableHead>
-                <TableHead className='w-18 text-[0.65rem] uppercase'>
+                <TableHead className='w-18 text-[0.65rem] font-medium'>
                   Conf. nome
                 </TableHead>
-                <TableHead className='min-w-20 text-[0.65rem] uppercase'>
+                <TableHead className='min-w-20 text-[0.65rem] font-medium'>
                   Situação
                 </TableHead>
               </TableRow>
@@ -1100,20 +1230,20 @@ function MultipleCandidatesSection({
           role='radiogroup'
           aria-label='Escolher o fornecedor (ERP)'
         >
-          <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+          <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-tight'>
             ERP (fornecedor)
           </p>
           <Table>
             <TableHeader>
               <TableRow className='hover:bg-transparent'>
                 <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs' />
-                <TableHead className='text-[0.65rem] uppercase'>
+                <TableHead className='text-[0.65rem] font-medium'>
                   Fornecedor
                 </TableHead>
-                <TableHead className='w-18 text-[0.65rem] uppercase'>
+                <TableHead className='w-18 text-[0.65rem] font-medium'>
                   Conf. nome
                 </TableHead>
-                <TableHead className='min-w-20 text-[0.65rem] uppercase'>
+                <TableHead className='min-w-20 text-[0.65rem] font-medium'>
                   Situação
                 </TableHead>
               </TableRow>
@@ -1199,6 +1329,8 @@ function LinkPaymentVinculoSection({
 }) {
   const queryClient = useQueryClient();
   const [pendingKind, setPendingKind] = useState<'PIX' | 'TED' | null>(null);
+  const [boletoOpen, setBoletoOpen] = useState(false);
+  const [boletoSubmitting, setBoletoSubmitting] = useState(false);
   const mut = useMutation({
     mutationFn: (kind: 'PIX' | 'TED') =>
       linkPaymentVinculo(runId, row.id, { kind }),
@@ -1216,14 +1348,23 @@ function LinkPaymentVinculoSection({
     },
   });
   const err = mut.error instanceof Error ? mut.error.message : null;
+  const busy = mut.isPending || boletoSubmitting;
   return (
     <div className='flex flex-col items-stretch gap-2'>
+      <BoletoManualVinculoModal
+        open={boletoOpen}
+        onOpenChange={setBoletoOpen}
+        runId={runId}
+        suggestionId={row.id}
+        onSubmittingChange={setBoletoSubmitting}
+        onSuccess={onResolved}
+      />
       <div className='flex flex-wrap justify-end gap-2'>
         <Button
           type='button'
           variant='secondary'
           className='h-9 gap-2'
-          disabled={mut.isPending}
+          disabled={busy}
           onClick={() => {
             mut.mutate('PIX');
           }}
@@ -1240,7 +1381,7 @@ function LinkPaymentVinculoSection({
           type='button'
           variant='secondary'
           className='h-9 gap-2'
-          disabled={mut.isPending}
+          disabled={busy}
           onClick={() => {
             mut.mutate('TED');
           }}
@@ -1253,12 +1394,62 @@ function LinkPaymentVinculoSection({
           )}
           Vincular TED
         </Button>
+        <Button
+          type='button'
+          variant='secondary'
+          className='h-9 gap-2'
+          disabled={busy}
+          onClick={() => {
+            setBoletoOpen(true);
+          }}
+          aria-label='Vínculo manual'
+        >
+          <Link2 className='size-4 shrink-0' />
+          Vínculo manual
+        </Button>
       </div>
       {err != null && err.length > 0 ? (
         <p className='text-destructive text-right text-sm' role='alert'>
           {err}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function ManualBoletoVinculoSection({
+  runId,
+  row,
+  onResolved,
+}: {
+  runId: string;
+  row: SuggestionListItem;
+  onResolved?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className='flex flex-col items-stretch gap-2'>
+      <BoletoManualVinculoModal
+        open={open}
+        onOpenChange={setOpen}
+        runId={runId}
+        suggestionId={row.id}
+        onSuccess={onResolved}
+      />
+      <div className='flex flex-wrap justify-end gap-2'>
+        <Button
+          type='button'
+          variant='secondary'
+          className='h-9 gap-2'
+          onClick={() => {
+            setOpen(true);
+          }}
+          aria-label='Vínculo manual'
+        >
+          <Link2 className='size-4 shrink-0' />
+          Vínculo manual
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1285,7 +1476,7 @@ function RawMetadataBlock({ r }: { r: SuggestionListItem }) {
   }
   return (
     <div className='bg-muted/60 border-border/80 rounded-lg border p-3'>
-      <p className='text-muted-foreground mb-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+      <p className='text-muted-foreground mb-2 text-[0.65rem] font-semibold tracking-tight'>
         Metadados brutos
       </p>
       <pre className='text-foreground/90 max-h-48 overflow-auto text-[0.72rem] leading-relaxed break-all whitespace-pre-wrap font-mono'>
@@ -1315,7 +1506,7 @@ function FieldBlock({
           : 'border-border/80 bg-card',
       )}
     >
-      <p className='text-muted-foreground mb-1.5 text-[0.65rem] font-semibold tracking-wider uppercase'>
+      <p className='text-muted-foreground mb-1.5 text-[0.65rem] font-semibold tracking-tight'>
         {label}
       </p>
       <div className='flex items-start gap-2'>
@@ -1343,7 +1534,7 @@ function AggregatedErpVinculosTable({
   }
   return (
     <div className='w-full min-w-0 space-y-2'>
-      <p className='text-muted-foreground text-[0.65rem] font-semibold tracking-wider uppercase'>
+      <p className='text-muted-foreground text-[0.65rem] font-semibold tracking-tight'>
         Títulos ERP vinculados (soma = extrato)
       </p>
       <div
@@ -1355,16 +1546,16 @@ function AggregatedErpVinculosTable({
         <Table>
           <TableHeader className='bg-card sticky top-0 z-10 shadow-[0_1px_0_0_hsl(var(--border))]'>
             <TableRow className='hover:bg-transparent'>
-              <TableHead className='text-[0.65rem] uppercase'>
+              <TableHead className='text-[0.65rem] font-medium'>
                 Fornecedor
               </TableHead>
-              <TableHead className='w-28 min-w-24 text-[0.65rem] uppercase'>
+              <TableHead className='w-28 min-w-24 text-[0.65rem] font-medium'>
                 Valor
               </TableHead>
-              <TableHead className='w-36 min-w-28 text-[0.65rem] uppercase'>
+              <TableHead className='w-36 min-w-28 text-[0.65rem] font-medium'>
                 Vencimento
               </TableHead>
-              <TableHead className='w-24 min-w-20 text-[0.65rem] uppercase'>
+              <TableHead className='w-24 min-w-20 text-[0.65rem] font-medium'>
                 NF
               </TableHead>
             </TableRow>
@@ -1411,7 +1602,7 @@ function SideCard({ kind, r, nameWarn, amountWarn }: SideCardProps) {
   const amountLabel = isBank ? 'Valor (banco)' : 'Valor (ERP)';
   return (
     <div className='border-border/80 flex min-w-0 flex-1 flex-col gap-3 rounded-lg border bg-white p-4 dark:bg-card'>
-      <h3 className='text-muted-foreground text-[0.7rem] font-bold tracking-wider uppercase'>
+      <h3 className='text-muted-foreground text-[0.7rem] font-bold tracking-tight'>
         {title}
       </h3>
       <FieldBlock
@@ -1432,7 +1623,7 @@ function SideCard({ kind, r, nameWarn, amountWarn }: SideCardProps) {
             : undefined
         }
       />
-      <div className='text-muted-foreground text-[0.65rem] font-medium uppercase'>
+      <div className='text-muted-foreground text-[0.65rem] font-medium'>
         Data
       </div>
       <p className='text-foreground -mt-2 text-sm'>{formatDatePt(r.dueDate)}</p>
@@ -1466,7 +1657,7 @@ function AnalysisCallout({ r }: { r: SuggestionListItem }) {
           <Badge
             variant='secondary'
             className={cn(
-              'font-mono text-[0.65rem] tracking-tight',
+              'text-[0.65rem] font-medium tracking-tight',
               levelBadgeClass(level),
             )}
           >
@@ -1478,7 +1669,7 @@ function AnalysisCallout({ r }: { r: SuggestionListItem }) {
             p.type === 'code' ? (
               <code
                 key={i}
-                className='border-border bg-background text-foreground mx-0.5 inline rounded border px-1.5 py-0.5 font-mono text-[0.8rem] font-normal [overflow-wrap:anywhere]'
+                className='border-border bg-background text-foreground mx-0.5 inline rounded border px-1.5 py-0.5 font-mono text-[0.8rem] font-normal wrap-anywhere'
               >
                 {p.t}
               </code>
@@ -1496,7 +1687,7 @@ function AuditLogTable({ r }: { r: SuggestionListItem }) {
   const reasonLabel = REASON_LABEL[r.reason] ?? r.reason;
   return (
     <div className='mt-1 space-y-2'>
-      <div className='text-muted-foreground flex items-center gap-2 text-[0.65rem] font-semibold tracking-wider uppercase'>
+      <div className='text-muted-foreground flex items-center gap-2 text-[0.65rem] font-semibold tracking-tight'>
         <ScrollText className='size-3.5' />
         Rastreio de avaliação
       </div>
@@ -1504,13 +1695,13 @@ function AuditLogTable({ r }: { r: SuggestionListItem }) {
         <Table>
           <TableHeader>
             <TableRow className='hover:bg-transparent'>
-              <TableHead className='h-8 text-[0.65rem] uppercase'>
+              <TableHead className='h-8 text-[0.65rem] font-medium'>
                 Referência
               </TableHead>
-              <TableHead className='h-8 w-28 text-[0.65rem] uppercase'>
+              <TableHead className='h-8 w-28 text-[0.65rem] font-medium'>
                 Etapa
               </TableHead>
-              <TableHead className='h-8 text-[0.65rem] uppercase'>
+              <TableHead className='h-8 text-[0.65rem] font-medium'>
                 Detalhe
               </TableHead>
             </TableRow>
@@ -1521,7 +1712,10 @@ function AuditLogTable({ r }: { r: SuggestionListItem }) {
                 {r.dueDate ? formatDatePt(r.dueDate) : '—'}
               </TableCell>
               <TableCell className='w-28'>
-                <Badge variant='secondary' className='font-mono text-[0.6rem]'>
+                <Badge
+                  variant='secondary'
+                  className='text-[0.6rem] font-medium'
+                >
                   {REASON_LABEL[r.reason] != null ? 'Avaliado' : 'Registro'}
                 </Badge>
               </TableCell>
@@ -1556,6 +1750,58 @@ function AuditLogTable({ r }: { r: SuggestionListItem }) {
   );
 }
 
+export type ExtratoBankLineForModal = {
+  rowNumber: number;
+  paymentDate: string | null;
+  beneficiaryRaw: string;
+  amount: string;
+  paymentTypeRaw: string | null;
+  matchKind: 'AUTO' | 'MANUAL' | null;
+  justification: string | null;
+};
+
+function ExtratoBankMatchPanel({ line }: { line: ExtratoBankLineForModal }) {
+  const kindLabel =
+    line.matchKind === 'MANUAL'
+      ? 'Manual (justificado)'
+      : line.matchKind === 'AUTO'
+        ? 'Automático'
+        : '—';
+  return (
+    <div className='border-emerald-200 bg-emerald-50/60 dark:border-emerald-900/45 dark:bg-emerald-950/35 rounded-lg border p-3'>
+      <div className='text-emerald-900 dark:text-emerald-100 mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold'>
+        <span>Extrato do banco — linha correspondente</span>
+        <Badge
+          variant='secondary'
+          className='border-emerald-300/80 bg-emerald-100/90 text-[0.65rem] text-emerald-950 dark:border-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-100'
+        >
+          {kindLabel}
+        </Badge>
+      </div>
+      <dl className='text-foreground/95 grid gap-x-4 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]'>
+        <dt className='text-muted-foreground'>Linha na planilha</dt>
+        <dd className='font-mono'>{line.rowNumber}</dd>
+        <dt className='text-muted-foreground'>Data de pagamento</dt>
+        <dd>{line.paymentDate ?? '—'}</dd>
+        <dt className='text-muted-foreground'>Favorecido</dt>
+        <dd className='min-w-0 wrap-break-word'>{line.beneficiaryRaw}</dd>
+        <dt className='text-muted-foreground'>Valor</dt>
+        <dd className='font-mono tabular-nums'>{formatBrlAmount(line.amount)}</dd>
+        <dt className='text-muted-foreground'>Tipo</dt>
+        <dd>{line.paymentTypeRaw ?? '—'}</dd>
+      </dl>
+      {line.matchKind === 'MANUAL' &&
+      line.justification != null &&
+      line.justification.trim().length > 0 ? (
+        <p className='text-muted-foreground mt-2 border-emerald-200/80 dark:border-emerald-800/80 border-t pt-2 text-xs'>
+          <span className='text-foreground font-medium'>Justificativa: </span>
+          {line.justification}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function SuggestionDetailModal({
   row,
   open,
@@ -1563,6 +1809,7 @@ export function SuggestionDetailModal({
   line,
   runId,
   onResolved,
+  extratoBankLine,
 }: {
   row: SuggestionListItem | null;
   open: boolean;
@@ -1570,6 +1817,8 @@ export function SuggestionDetailModal({
   line: number | null;
   runId?: string | null;
   onResolved?: () => void;
+  /** Quando preenchido (ex.: Contas pagas com extrato importado), mostra a linha do extrato vinculada. */
+  extratoBankLine?: ExtratoBankLineForModal | null;
 }) {
   if (row == null) {
     return null;
@@ -1597,6 +1846,9 @@ export function SuggestionDetailModal({
         </DialogHeader>
         <div className='space-y-4 p-4'>
           <MotivoReasonBadges row={row} />
+          {extratoBankLine ? (
+            <ExtratoBankMatchPanel line={extratoBankLine} />
+          ) : null}
           {both &&
           row.reason === 'AGGREGATED_CANDIDATE' &&
           row.aggregatedErpLines != null &&
@@ -1629,7 +1881,7 @@ export function SuggestionDetailModal({
             </div>
           ) : hBank && !hInt && row.reason === 'NO_INTERNAL_MATCH' && runId ? (
             <BankOnlyInternalSumPanel
-              key={row.id}
+              key={`${runId}|${row.id}`}
               runId={runId}
               row={row}
               open={open}
@@ -1680,16 +1932,27 @@ export function SuggestionDetailModal({
               onResolved={onResolved}
             />
           ) : null}
-          {runId &&
-          isSuggestionOpenState(row) &&
-          row.reason === 'NO_BANK_MATCH' &&
-          hasInternalData(row) &&
-          !hasBankData(row) ? (
-            <LinkPaymentVinculoSection
-              runId={runId}
-              row={row}
-              onResolved={onResolved}
-            />
+          {runId && isSuggestionOpenState(row) ? (
+            <div className='flex w-full flex-col items-stretch gap-3 sm:items-end'>
+              {row.reason === 'NO_BANK_MATCH' &&
+              hasInternalData(row) &&
+              !hasBankData(row) ? (
+                <LinkPaymentVinculoSection
+                  runId={runId}
+                  row={row}
+                  onResolved={onResolved}
+                />
+              ) : null}
+              {row.reason === 'NO_INTERNAL_MATCH' &&
+              hasBankData(row) &&
+              !hasInternalData(row) ? (
+                <ManualBoletoVinculoSection
+                  runId={runId}
+                  row={row}
+                  onResolved={onResolved}
+                />
+              ) : null}
+            </div>
           ) : null}
           <RawMetadataBlock r={row} />
           <AuditLogTable r={row} />
