@@ -81,7 +81,53 @@ export type PublicUser = {
   role: string;
   active: boolean;
   firstLogin: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
+
+export async function getMeUserRequest(): Promise<{ user: PublicUser }> {
+  return apiJson('/users/me');
+}
+
+export async function listUsersRequest(params?: {
+  active?: boolean;
+}): Promise<{ users: PublicUser[] }> {
+  const sp = new URLSearchParams();
+  if (params?.active !== undefined) {
+    sp.set('active', params.active ? 'true' : 'false');
+  }
+  const q = sp.toString();
+  return apiJson(`/users${q ? `?${q}` : ''}`);
+}
+
+export async function registerUserRequest(body: {
+  cardNumber: string;
+  unit: 'PEDERTRACTOR' | 'TRACTOR';
+  role: 'FINANCIAL' | 'ADMIN';
+}): Promise<{ user: PublicUser }> {
+  return apiJson('/users', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deactivateUserRequest(
+  userId: string,
+): Promise<{ user: PublicUser }> {
+  return apiJson(`/users/${userId}/deactivate`, { method: 'PATCH' });
+}
+
+export async function activateUserRequest(
+  userId: string,
+): Promise<{ user: PublicUser }> {
+  return apiJson(`/users/${userId}/activate`, { method: 'PATCH' });
+}
+
+export async function resetFirstLoginRequest(
+  userId: string,
+): Promise<{ user: PublicUser }> {
+  return apiJson(`/users/${userId}/reset-first-login`, { method: 'PATCH' });
+}
 
 export async function loginRequest(body: {
   cardNumber: string;

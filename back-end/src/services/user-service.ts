@@ -193,6 +193,68 @@ export class UserService {
     return toPublicUserDto(updated);
   }
 
+  async activate({
+    userId,
+    actorUserId,
+  }: {
+    userId: string;
+    actorUserId: string;
+  }): Promise<PublicUserDto> {
+    const userRepository = new UserPrismaRepository(prisma);
+    const user = await userRepository.findById(userId);
+
+    if (!user) {
+      throw new HttpError('Usuário não encontrado', 404);
+    }
+
+    if (userId === actorUserId) {
+      throw new HttpError('Não é possível ativar o próprio usuário', 400);
+    }
+
+    if (user.active) {
+      return toPublicUserDto(user);
+    }
+
+    const updated = await userRepository.updateById(userId, {
+      active: true,
+    });
+
+    return toPublicUserDto(updated);
+  }
+
+  /** Volta `firstLogin` e redefine senha para padrão (número do cartão), como no cadastro. */
+  async resetFirstAccess({
+    userId,
+    actorUserId,
+  }: {
+    userId: string;
+    actorUserId: string;
+  }): Promise<PublicUserDto> {
+    const userRepository = new UserPrismaRepository(prisma);
+    const user = await userRepository.findById(userId);
+
+    if (!user) {
+      throw new HttpError('Usuário não encontrado', 404);
+    }
+
+    if (userId === actorUserId) {
+      throw new HttpError(
+        'Não é possível resetar o primeiro acesso do próprio usuário',
+        400,
+      );
+    }
+
+    const defaultPassword = user.cardNumber;
+    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+    const updated = await userRepository.updateById(userId, {
+      passwordHash,
+      firstLogin: true,
+    });
+
+    return toPublicUserDto(updated);
+  }
+
   async update({
     userId,
     name,

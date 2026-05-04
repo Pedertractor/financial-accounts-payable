@@ -157,7 +157,7 @@ export function FirstPasswordPage() {
                 >
                   <div>
                     <h1 className='text-center text-2xl font-bold tracking-tight md:text-left'>
-                      ReconcilePro
+                      TractorPay
                     </h1>
                     <div className='border-border/60 bg-muted/40 mt-4 flex gap-3 rounded-lg border p-3 text-left'>
                       <div

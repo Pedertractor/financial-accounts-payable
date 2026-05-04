@@ -7,6 +7,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { PixTedPage } from '@/pages/PixTedPage'
 import { ContasPage } from '@/pages/ContasPage'
 import { VinculosPage } from '@/pages/VinculosPage'
+import { UsersPage } from '@/pages/UsersPage'
 
 function RequireAuth() {
   if (!getStoredToken()) {
@@ -27,6 +28,7 @@ const App = () => {
           <Route path="/conciliacao" element={<VinculosPage />} />
           <Route path="/contas" element={<ContasPage />} />
           <Route path="/pix-ted" element={<PixTedPage />} />
+          <Route path="/usuarios" element={<UsersPage />} />
           <Route path="/pix" element={<Navigate to="/pix-ted" replace />} />
         </Route>
       </Route>

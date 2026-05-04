@@ -35,8 +35,9 @@ function segmentTitle(pathname: string): string {
   if (pathname === '/conciliacao') return 'Conciliação'
   if (pathname === '/contas') return 'Contas pagas'
   if (pathname === '/pix-ted') return 'PIX & TED'
+  if (pathname === '/usuarios') return 'Usuários'
   if (pathname === '/') return 'Início'
-  return 'ReconcilePro'
+  return 'TractorPay'
 }
 
 function AppShellMain() {
@@ -86,7 +87,7 @@ function AppShellMain() {
                   to="/conciliacao"
                   className="text-muted-foreground hover:text-foreground text-sm leading-none"
                 >
-                  ReconcilePro
+                  TractorPay
                 </Link>
               </BreadcrumbItem>
               <BreadcrumbSeparator />

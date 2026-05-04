@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Banknote, Building2, Database, FileSpreadsheet, Home, Wallet } from 'lucide-react'
+import { Banknote, Building2, Database, FileSpreadsheet, Home, Users, Wallet } from 'lucide-react'
 import { NavMain } from '@/components/nav-main'
 import { NavProjects } from '@/components/nav-projects'
 import { NavUser } from '@/components/nav-user'
@@ -18,18 +18,23 @@ type AppSidebarProps = {
   onSignOut: () => void
 } & React.ComponentProps<typeof Sidebar>
 
-function buildNavItems() {
-  return [
+function buildNavItems(role?: string) {
+  const base = [
     { title: 'Dashboard', url: '/', icon: Home, soon: true },
     { title: 'Importar Dados', url: '/importar', icon: FileSpreadsheet },
     { title: 'Conciliação', url: '/conciliacao', icon: Database },
     { title: 'Contas pagas', url: '/contas', icon: Banknote },
     { title: 'PIX & TED', url: '/pix-ted', icon: Wallet },
   ] as const
+  const admin =
+    role === 'FINANCIAL' || role === 'ADMIN'
+      ? ([{ title: 'Usuários', url: '/usuarios', icon: Users }] as const)
+      : ([] as const)
+  return [...base, ...admin] as const
 }
 
 export function AppSidebar({ user, onSignOut, ...props }: AppSidebarProps) {
-  const navItems = buildNavItems()
+  const navItems = buildNavItems(user.role)
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -40,9 +45,8 @@ export function AppSidebar({ user, onSignOut, ...props }: AppSidebarProps) {
               <div className="bg-sidebar-primary text-sidebar-primary-foreground flex size-8 shrink-0 items-center justify-center rounded-lg">
                 <Building2 className="size-4" />
               </div>
-              <div className="min-w-0 flex-1 grid text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
-                <span className="truncate font-semibold">FinanceOps</span>
-                <span className="text-sidebar-foreground/70 truncate text-xs">ReconcilePro</span>
+              <div className="min-w-0 flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
+                <span className="truncate font-semibold">TractorPay</span>
               </div>
             </div>
           </SidebarMenuItem>
