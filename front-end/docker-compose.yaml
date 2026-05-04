@@ -1,12 +1,12 @@
 services:
-  frontend-finance:
+  frontend-finance-accounts-payble:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - '3134:80'
     networks:
-      - finance-network
+      - finance-accounts-payble-network
 
 networks:
-  finance-network:
+  finance-accounts-payble-network:
