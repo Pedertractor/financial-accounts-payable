@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -1061,16 +1060,16 @@ export function VinculosPage() {
           </p>
         </div>
 
-        <div className='flex w-full flex-col items-stretch gap-2 sm:max-w-2xl sm:items-end'>
-          <div className='flex flex-wrap items-end justify-end gap-3 self-end sm:justify-end'>
-            <div className='flex flex-col gap-1'>
+        <div className='flex w-full flex-col items-stretch gap-1.5 sm:max-w-2xl sm:items-end'>
+          <div className='flex flex-wrap items-end justify-end gap-2 self-end sm:justify-end'>
+            <div className='flex flex-col gap-0.5'>
               <span className='text-muted-foreground text-[0.65rem] font-medium'>
                 Filtro da lista
               </span>
               <div className='flex flex-wrap gap-1'>
                 <Button
                   type='button'
-                  size='xs'
+                  size='sm'
                   variant={statusFilter === 'todos' ? 'secondary' : 'outline'}
                   aria-pressed={statusFilter === 'todos'}
                   onClick={() => {
@@ -1082,7 +1081,7 @@ export function VinculosPage() {
                 </Button>
                 <Button
                   type='button'
-                  size='xs'
+                  size='sm'
                   variant={statusFilter === 'pendente' ? 'secondary' : 'outline'}
                   className={cn(
                     statusFilter === 'pendente' &&
@@ -1100,7 +1099,7 @@ export function VinculosPage() {
                 </Button>
                 <Button
                   type='button'
-                  size='xs'
+                  size='sm'
                   variant={statusFilter === 'conferido' ? 'secondary' : 'outline'}
                   className={cn(
                     statusFilter === 'conferido' &&
@@ -1117,18 +1116,11 @@ export function VinculosPage() {
                   Conferido ({summary.conferido.toLocaleString('pt-BR')})
                 </Button>
               </div>
-              <p className='text-muted-foreground max-w-xs text-[0.65rem] leading-snug'>
-                Contas já pagas estão em{' '}
-                <Link className='text-foreground underline' to='/contas'>
-                  Contas pagas
-                </Link>{' '}
-                (menu lateral).
-              </p>
             </div>
-            <div className='flex w-max max-w-full min-w-0 flex-col gap-1.5'>
+            <div className='flex w-max max-w-full min-w-0 flex-col gap-0.5'>
               <Label
                 htmlFor='compare-date'
-                className='text-muted-foreground text-xs font-medium'
+                className='text-muted-foreground text-[0.65rem] font-medium'
               >
                 Data (vencimento)
               </Label>
@@ -1146,11 +1138,11 @@ export function VinculosPage() {
                     type='button'
                     id='compare-date'
                     variant='outline'
-                    className='text-foreground border-border hover:bg-background hover:text-foreground inline-flex h-9 max-w-full min-w-0 w-max justify-start gap-2 rounded-md border bg-transparent px-2.5 text-left text-[0.8125rem] font-normal leading-tight shadow-sm'
+                    className='text-foreground border-border hover:bg-background hover:text-foreground inline-flex h-7 max-w-full min-w-0 w-max justify-start gap-1.5 rounded-md border bg-transparent px-2 text-left text-[0.8rem] font-normal leading-tight shadow-sm'
                     aria-label='Selecionar data de vencimento do comparativo'
                   >
                     <CalendarIcon
-                      className='text-muted-foreground size-3.5 shrink-0'
+                      className='text-muted-foreground size-3 shrink-0'
                       aria-hidden
                     />
                     <div className='text-foreground/90 flex min-w-0 flex-row flex-wrap items-baseline gap-x-1 gap-y-0.5 leading-tight'>
@@ -1192,12 +1184,10 @@ export function VinculosPage() {
           <div className='flex w-full min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5 self-end sm:max-w-2xl'>
             <Button
               type='button'
-              size='xs'
-              variant='outline'
-              className={cn(
-                unitFilter === 'PEDERTRACTOR' &&
-                  'ring-2 ring-sky-500/60 ring-offset-1',
-              )}
+              size='sm'
+              variant={
+                unitFilter === 'PEDERTRACTOR' ? 'secondary' : 'outline'
+              }
               title='Só PEDERTRACTOR'
               aria-pressed={unitFilter === 'PEDERTRACTOR'}
               onClick={() => {
@@ -1209,12 +1199,8 @@ export function VinculosPage() {
             </Button>
             <Button
               type='button'
-              size='xs'
-              variant='outline'
-              className={cn(
-                unitFilter === 'TRACTOR' &&
-                  'ring-2 ring-sky-500/60 ring-offset-1',
-              )}
+              size='sm'
+              variant={unitFilter === 'TRACTOR' ? 'secondary' : 'outline'}
               title='Só TRACTOR'
               aria-pressed={unitFilter === 'TRACTOR'}
               onClick={() => {

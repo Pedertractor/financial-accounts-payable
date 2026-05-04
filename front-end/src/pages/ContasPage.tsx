@@ -40,6 +40,11 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   SuggestionDetailModal,
   type ExtratoBankLineForModal,
 } from '@/components/suggestion-detail-modal';
@@ -124,7 +129,13 @@ function formatCompareRangeLabel(range: VinculosDateRangeYmd): string {
   return `${formatYmdLongPt(range.from)} – ${formatYmdLongPt(range.to)}`;
 }
 
-type SortColumn = 'index' | 'amount' | 'forma' | 'externo' | 'interno';
+type SortColumn =
+  | 'index'
+  | 'amount'
+  | 'forma'
+  | 'externo'
+  | 'interno'
+  | 'situacao';
 type SortDir = 'asc' | 'desc';
 
 function parseAmount(n: string | null | undefined): number {
@@ -168,6 +179,29 @@ function settledAmountTooltip(r: SuggestionListItem): string | undefined {
     return `Banco: ${formatBrlAmount(r.amountBank ?? null)} · ERP: ${formatBrlAmount(r.amountInternal ?? null)}`;
   }
   return undefined;
+}
+
+/** Mesmo critério da coluna Valor (banco vs ERP), para totais. */
+function settledPaidAmountNumber(r: SuggestionListItem): number {
+  const b = parseAmount(r.amountBank);
+  const i = parseAmount(r.amountInternal);
+  if (!Number.isNaN(b) && !Number.isNaN(i)) {
+    if (Math.abs(b - i) < 0.005) {
+      return b;
+    }
+    return b;
+  }
+  if (!Number.isNaN(b)) return b;
+  if (!Number.isNaN(i)) return i;
+  const a = parseAmount(r.amount);
+  return Number.isNaN(a) ? Number.NaN : a;
+}
+
+function formatBrlNumber(n: number): string {
+  return n.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  });
 }
 
 function formaForSort(r: SuggestionListItem): string {
@@ -324,6 +358,8 @@ export function ContasPage() {
     column: SortColumn
     dir: SortDir
   } | null>(null);
+  /** Ordenação da coluna Situação no extrato: vinculados (linha verde) primeiro em `desc`. */
+  const [extratoSitSort, setExtratoSitSort] = useState<SortDir | null>(null);
   const [suggestionDetail, setSuggestionDetail] = useState<{
     row: SuggestionListItem
     line: number
@@ -434,6 +470,27 @@ export function ContasPage() {
 
   const rows = useMemo(() => data?.items ?? [], [data?.items]);
 
+  const contasExtratoComparativo = useMemo(() => {
+    let contas = 0;
+    for (const r of rows) {
+      const n = settledPaidAmountNumber(r);
+      if (!Number.isNaN(n)) contas += n;
+    }
+    const hasExtrato = extratoState?.import != null;
+    let extratoSum = 0;
+    if (hasExtrato) {
+      for (const l of extratoState.extratoLines ?? []) {
+        const n = parseAmount(l.amount);
+        if (!Number.isNaN(n)) extratoSum += n;
+      }
+    }
+    return {
+      contasTotal: contas,
+      extratoTotal: hasExtrato ? extratoSum : null,
+      diff: hasExtrato ? extratoSum - contas : null,
+    };
+  }, [rows, extratoState]);
+
   const matchedSuggestionIds = useMemo(() => {
     const s = new Set<string>();
     for (const l of extratoState?.extratoLines ?? []) {
@@ -444,13 +501,22 @@ export function ContasPage() {
     return s;
   }, [extratoState?.extratoLines]);
 
-  const extratoLinesOrdered = useMemo(
-    () =>
-      [...(extratoState?.extratoLines ?? [])].sort(
-        (a, b) => a.rowNumber - b.rowNumber,
-      ),
-    [extratoState?.extratoLines],
-  );
+  const extratoLinesOrdered = useMemo(() => {
+    const base = [...(extratoState?.extratoLines ?? [])];
+    if (extratoSitSort == null) {
+      base.sort((a, b) => a.rowNumber - b.rowNumber);
+      return base;
+    }
+    base.sort((a, b) => {
+      const va = a.matchedSuggestionId ? 1 : 0;
+      const vb = b.matchedSuggestionId ? 1 : 0;
+      if (va !== vb) {
+        return extratoSitSort === 'desc' ? vb - va : va - vb;
+      }
+      return a.rowNumber - b.rowNumber;
+    });
+    return base;
+  }, [extratoState?.extratoLines, extratoSitSort]);
 
   const extratoStats = useMemo(() => {
     const n = extratoLinesOrdered.length;
@@ -513,6 +579,15 @@ export function ContasPage() {
         const c = compareDisplayName(a.r, b.r, (row) => row.internalName, tableSort.dir);
         return c !== 0 ? c : a.orig - b.orig;
       });
+    } else if (tableSort.column === 'situacao') {
+      withOrig.sort((a, b) => {
+        const va = matchedSuggestionIds.has(a.r.id) ? 1 : 0;
+        const vb = matchedSuggestionIds.has(b.r.id) ? 1 : 0;
+        if (va !== vb) {
+          return tableSort.dir === 'desc' ? vb - va : va - vb;
+        }
+        return a.orig - b.orig;
+      });
     } else {
       withOrig.sort((a, b) => {
         const na = amountForSort(a.r);
@@ -524,7 +599,7 @@ export function ContasPage() {
       });
     }
     return withOrig.map((x) => ({ row: x.r, line: x.line }));
-  }, [rows, tableSort]);
+  }, [rows, tableSort, matchedSuggestionIds]);
 
   const showLoading =
     suggestionsLoading || (suggestionsFetching && suggestionsPlaceholder);
@@ -572,6 +647,20 @@ export function ContasPage() {
         : prev.dir === 'asc'
           ? { column: 'interno', dir: 'desc' }
           : null,
+    );
+  }
+  function cycleSortSituacao() {
+    setTableSort((prev) =>
+      prev?.column !== 'situacao'
+        ? { column: 'situacao', dir: 'desc' }
+        : prev.dir === 'desc'
+          ? { column: 'situacao', dir: 'asc' }
+          : null,
+    );
+  }
+  function cycleExtratoSitSort() {
+    setExtratoSitSort((prev) =>
+      prev == null ? 'desc' : prev === 'desc' ? 'asc' : null,
     );
   }
 
@@ -683,20 +772,22 @@ export function ContasPage() {
           <div className='flex flex-wrap justify-end gap-1.5'>
             <Button
               type='button'
-              size='xs'
-              variant='outline'
-              className={cn(
-                unitFilter === 'PEDERTRACTOR' && 'ring-2 ring-sky-500/60 ring-offset-1',
-              )}
+              size='sm'
+              variant={
+                unitFilter === 'PEDERTRACTOR' ? 'secondary' : 'outline'
+              }
+              title='Só PEDERTRACTOR'
+              aria-pressed={unitFilter === 'PEDERTRACTOR'}
               onClick={() => setUnitFilter('PEDERTRACTOR')}
             >
               PEDERTRACTOR
             </Button>
             <Button
               type='button'
-              size='xs'
-              variant='outline'
-              className={cn(unitFilter === 'TRACTOR' && 'ring-2 ring-sky-500/60 ring-offset-1')}
+              size='sm'
+              variant={unitFilter === 'TRACTOR' ? 'secondary' : 'outline'}
+              title='Só TRACTOR'
+              aria-pressed={unitFilter === 'TRACTOR'}
               onClick={() => setUnitFilter('TRACTOR')}
             >
               TRACTOR
@@ -704,6 +795,35 @@ export function ContasPage() {
           </div>
         </div>
       </div>
+
+      {!showLoading && (rows.length > 0 || extratoState?.import != null) ? (
+        <div
+          className='text-muted-foreground border-border/60 bg-muted/30 font-mono flex justify-center rounded-md border-t px-3 py-2 text-center text-xs tabular-nums'
+          title='Extrato (soma das linhas) menos contas pagas (soma da coluna Valor).'
+        >
+          Extrato / Contas pagas:{' '}
+          {contasExtratoComparativo.extratoTotal != null
+            ? formatBrlNumber(contasExtratoComparativo.extratoTotal)
+            : '—'}{' '}
+          - {formatBrlNumber(contasExtratoComparativo.contasTotal)} ={' '}
+          {contasExtratoComparativo.diff != null ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className='border-emerald-500 text-foreground inline border-b font-medium' />
+                }
+              >
+                {formatBrlNumber(contasExtratoComparativo.diff)}
+              </TooltipTrigger>
+              <TooltipContent side='top' className='text-xs'>
+                Diferença encontrada
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            '—'
+          )}
+        </div>
+      ) : null}
 
       {linkSelectHint != null ? (
         <p className='text-amber-800 dark:text-amber-200 text-xs' role='status'>
@@ -768,7 +888,17 @@ export function ContasPage() {
                     <TableHead className='min-w-36 text-xs'>
                       <SortableTh label='Forma de pagamento' active={tableSort?.column === 'forma'} direction={tableSort?.column === 'forma' ? tableSort.dir : null} onClick={cycleSortForma} screenReaderHint='PIX, TED ou pagamento comum.' />
                     </TableHead>
-                    <TableHead className='w-28 text-center text-xs'>Conferido</TableHead>
+                    <TableHead className='w-28 text-center text-xs'>
+                      <div className='flex justify-center'>
+                        <SortableTh
+                          label='Situação'
+                          active={tableSort?.column === 'situacao'}
+                          direction={tableSort?.column === 'situacao' ? tableSort.dir : null}
+                          onClick={cycleSortSituacao}
+                          screenReaderHint='Ordenar por conferência no extrato: vinculadas primeiro, depois sem par, ou limpar.'
+                        />
+                      </div>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -894,7 +1024,15 @@ export function ContasPage() {
                     <TableHead className='text-xs'>Favorecido</TableHead>
                     <TableHead className='text-right text-xs'>Valor</TableHead>
                     <TableHead className='text-xs'>Tipo</TableHead>
-                    <TableHead className='text-xs'>Situação</TableHead>
+                    <TableHead className='text-xs'>
+                      <SortableTh
+                        label='Situação'
+                        active={extratoSitSort != null}
+                        direction={extratoSitSort}
+                        onClick={cycleExtratoSitSort}
+                        screenReaderHint='Ordenar: vinculado ao extrato (linha verde) primeiro, depois sem par, ou ordem do arquivo.'
+                      />
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
