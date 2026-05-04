@@ -16,6 +16,7 @@ services:
 
   postgresql-financial-accounts-payable:
     image: postgres:16
+    container_name: postgresql-financial-accounts-payable
     ports:
       - 5438:5432
     environment:
