@@ -31,7 +31,7 @@ COPY --from=build /usr/src/app/prisma.config.ts ./prisma.config.ts
 COPY --from=build /usr/src/app/src ./src
 
 # porta que vai ficar exposta para acessar o back-end
-EXPOSE 3230
+EXPOSE 3135
 
 # prisma generate atualiza src/generated; seed é idempotente (pula ADMs já existentes).
 CMD ["sh", "-c", "npx prisma generate && npx prisma migrate deploy && npx prisma db seed && npm run start"]
