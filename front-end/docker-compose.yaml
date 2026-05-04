@@ -9,4 +9,5 @@ services:
       - finance-accounts-payble-network
 
 networks:
-  finance-accounts-payble-network:
+  financial-accounts-payble-network:
+    name: financial-accounts-payble-network
