@@ -1832,8 +1832,11 @@ export function SuggestionDetailModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className='max-w-4xl gap-0 p-0' showCloseButton>
-        <DialogHeader className='border-border/60 space-y-1 border-b p-4 pb-3 pr-12'>
+      <DialogContent
+        className='flex max-h-[min(90vh,48rem)] max-w-4xl flex-col gap-0 overflow-hidden p-0'
+        showCloseButton
+      >
+        <DialogHeader className='border-border/60 shrink-0 space-y-1 border-b p-4 pb-3 pr-12'>
           <DialogTitle>
             Comparação banco × ERP
             {line != null ? (
@@ -1844,7 +1847,8 @@ export function SuggestionDetailModal({
             ) : null}
           </DialogTitle>
         </DialogHeader>
-        <div className='space-y-4 p-4'>
+        <div className='min-h-0 flex-1 overflow-y-auto'>
+          <div className='space-y-4 p-4'>
           <MotivoReasonBadges row={row} />
           {extratoBankLine ? (
             <ExtratoBankMatchPanel line={extratoBankLine} />
@@ -1956,6 +1960,7 @@ export function SuggestionDetailModal({
           ) : null}
           <RawMetadataBlock r={row} />
           <AuditLogTable r={row} />
+          </div>
         </div>
       </DialogContent>
     </Dialog>
