@@ -32,5 +32,5 @@ volumes:
   postgres_data:
   api_financial_accounts_payable_uploads:
 networks:
-  financial-accounts-payble-network:
-    name: financial-accounts-payble-network
+  financial-accounts-payable-network:
+    name: financial-accounts-payable-network

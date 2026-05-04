@@ -6,8 +6,8 @@ services:
     ports:
       - '3134:80'
     networks:
-      - finance-accounts-payble-network
+      - financial-accounts-payable-network
 
 networks:
-  financial-accounts-payble-network:
-    name: financial-accounts-payble-network
+  financial-accounts-payable-network:
+    name: financial-accounts-payable-network
