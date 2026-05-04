@@ -242,16 +242,16 @@ export function UsersPage() {
         <DialogContent showCloseButton className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Resetar primeiro acesso</DialogTitle>
-            <DialogDescription asChild>
-              <div className="space-y-2 text-sm">
-                <p>
-                  A senha volta ao <strong>número do cartão</strong> e o usuário deverá
-                  definir uma nova senha no próximo login (fluxo de primeiro acesso).
-                </p>
-                {confirmReset ? (
-                  <p className="text-foreground font-medium">{confirmReset.name}</p>
-                ) : null}
-              </div>
+            <DialogDescription className="space-y-2 text-sm">
+              <span className="block">
+                A senha volta ao <strong>número do cartão</strong> e o usuário deverá
+                definir uma nova senha no próximo login (fluxo de primeiro acesso).
+              </span>
+              {confirmReset ? (
+                <span className="text-foreground mt-2 block font-medium">
+                  {confirmReset.name}
+                </span>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">
@@ -371,7 +371,7 @@ export function UsersPage() {
               disabled={!canSubmitCreate || registerMut.isPending}
               className="bg-muted-foreground hover:bg-muted-foreground/90 h-10 min-w-34 rounded-lg border-0 px-8 text-white shadow-none"
               onClick={() => {
-                if (!canSubmitCreate || newUnit === '' || newRole === '') return
+                if (!canSubmitCreate) return
                 registerMut.mutate({
                   cardNumber: newCard.trim(),
                   unit: newUnit,
