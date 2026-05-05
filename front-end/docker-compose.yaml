@@ -1,13 +1,16 @@
+name: project-financial-accounts-payable
 services:
-  frontend-finance-accounts-payble:
+  project-financial-accounts-payable-front-end:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: project-financial-accounts-payable-front-end
     ports:
       - '3134:80'
     networks:
-      - financial-accounts-payable-network
+      - project-financial-accounts-payable-network
 
 networks:
-  financial-accounts-payable-network:
-    name: financial-accounts-payable-network
+  project-financial-accounts-payable-network:
+    external: true
+    name: project-financial-accounts-payable-network

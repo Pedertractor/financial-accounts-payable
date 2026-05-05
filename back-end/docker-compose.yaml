@@ -1,37 +1,38 @@
+name: project-financial-accounts-payable
 services:
-  api-financial-accounts-payable:
+  project-financial-accounts-payable-back-end:
     build: .
-    container_name: api-financial-accounts-payable
+    container_name: project-financial-accounts-payable-back-end
     restart: always
     ports:
       - 3135:3135
     env_file:
       - .env
     depends_on:
-      - postgresql-financial-accounts-payable
+      - project-financial-accounts-payable-database
     networks:
-      - financial-accounts-payable-network
+      - project-financial-accounts-payable-network
     volumes:
-      - api_financial_accounts_payable_uploads:/usr/src/app/uploads
+      - project-financial-accounts-payable-uploads:/usr/src/app/uploads
 
-  postgresql-financial-accounts-payable:
+  project-financial-accounts-payable-database:
     image: postgres:16
-    container_name: postgresql-financial-accounts-payable
+    container_name: project-financial-accounts-payable-database
     ports:
       - 5438:5432
     environment:
-      - POSTGRES_USER=docker
-      - POSTGRES_PASSWORD=docker
+      - POSTGRES_USER=financial-accounts-payable
+      - POSTGRES_PASSWORD=financial-accounts-payable
       - POSTGRES_DB=financial-accounts-payable
 
     networks:
-      - financial-accounts-payable-network
+      - project-financial-accounts-payable-network
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - project-financial-accounts-payable-postgres-data:/var/lib/postgresql/data
 
 volumes:
-  postgres_data:
-  api_financial_accounts_payable_uploads:
+  project-financial-accounts-payable-postgres-data:
+  project-financial-accounts-payable-uploads:
 networks:
-  financial-accounts-payable-network:
-    name: financial-accounts-payable-network
+  project-financial-accounts-payable-network:
+    name: project-financial-accounts-payable-network
