@@ -29,6 +29,10 @@ app.register(fastifyMultipart, {
 
 app.register(mainRoutes, { prefix: '/api' });
 
+app.get('/test', async (_, reply) => {
+  return reply.status(200).send();
+});
+
 function getErrorCode(error: unknown): string | undefined {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;
