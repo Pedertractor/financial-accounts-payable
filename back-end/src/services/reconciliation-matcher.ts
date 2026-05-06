@@ -21,6 +21,67 @@ import {
 type BankRow = ScoringBankRow & { id: string };
 type InternalRow = ScoringInternalRow & { id: string };
 
+const matchDiagnosticsLogPrefix = '[reconciliation-import] matchDiagnostics';
+
+function logMatchKeyOverlap(
+  runId: string,
+  banks: { amount: Prisma.Decimal; dueDate: Date | null }[],
+  internals: { amount: Prisma.Decimal; dueDate: Date | null }[],
+  pool: Map<string, InternalRow[]>,
+): void {
+  const bankDueNull = banks.filter((b) => b.dueDate == null).length;
+  const intDueNull = internals.filter((i) => i.dueDate == null).length;
+  const bankKeySet = new Set(banks.map((b) => matchKey(b.amount, b.dueDate)));
+  const intKeySet = new Set(pool.keys());
+  let fullKeyIntersectCount = 0;
+  for (const k of bankKeySet) {
+    if (intKeySet.has(k)) fullKeyIntersectCount++;
+  }
+
+  let bankRowsWithFullKeyMatch = 0;
+  const intAmountStr = new Set(internals.map((i) => i.amount.toString()));
+  let bankRowsWithAmountInErp = 0;
+  for (const b of banks) {
+    const k = matchKey(b.amount, b.dueDate);
+    if ((pool.get(k)?.length ?? 0) > 0) {
+      bankRowsWithFullKeyMatch++;
+    }
+    if (intAmountStr.has(b.amount.toString())) {
+      bankRowsWithAmountInErp++;
+    }
+  }
+
+  const bankRowsSameAmountDifferentKey =
+    bankRowsWithAmountInErp > 0
+      ? Math.max(0, bankRowsWithAmountInErp - bankRowsWithFullKeyMatch)
+      : 0;
+
+  console.log(matchDiagnosticsLogPrefix, {
+    runId,
+    banco_linhas: banks.length,
+    erp_linhas: internals.length,
+    banco_vencimento_null: bankDueNull,
+    erp_vencimento_null: intDueNull,
+    chaves_distintas_valor_data_banco: bankKeySet.size,
+    chaves_distintas_valor_data_erp: intKeySet.size,
+    chaves_valor_data_em_comum_distintas: fullKeyIntersectCount,
+    linhas_banco_com_par_valor_data: bankRowsWithFullKeyMatch,
+    linhas_banco_valor_existem_em_algum_erp: bankRowsWithAmountInErp,
+    linhas_banco_provavel_so_data_diferente: bankRowsSameAmountDifferentKey,
+    ajuda:
+      internals.length > 0 &&
+      intDueNull === internals.length &&
+      banks.length > 0 &&
+      bankDueNull < banks.length
+        ? 'Todo ERP sem dueDate gravado vs banco com data — revisar coluna vencimento na importação ERP.'
+        : bankRowsSameAmountDifferentKey > 0 && bankRowsWithFullKeyMatch === 0
+          ? 'Mesmo valor aparece nos dois lados mas nenhuma chave valor+data bate — checar formato/dia do vencimento ERP vs banco.'
+          : bankRowsWithFullKeyMatch === 0
+            ? 'Nenhuma linha do banco compartilha chave valor+data com o ERP — checar valores (centavos) e vencimentos.'
+            : 'Há sobreposição de chaves; triagem normal pode prosseguir.',
+  });
+}
+
 /**
  * Gera sugestões de vínculo para a execução, substituindo as anteriores.
  * Pareia banco e ERP por valor e vencimento (mesmo **dia** em
@@ -70,6 +131,8 @@ export async function generateMatchSuggestionsForRun(
   for (const arr of pool.values()) {
     arr.sort((x, y) => x.id.localeCompare(y.id));
   }
+
+  logMatchKeyOverlap(runId, banks, internals, pool);
 
   await prisma.matchSuggestion.deleteMany({ where: { runId } });
 
