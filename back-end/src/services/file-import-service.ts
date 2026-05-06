@@ -34,6 +34,9 @@ const PROGRESS_EVERY = 200;
 
 const UPLOAD_DIR_ABS = resolve(process.cwd(), env.UPLOAD_DIR);
 
+/** Logs de diagnóstico (importação em duas etapas + finalize). */
+const reconciliationImportLogPrefix = '[reconciliation-import]';
+
 function getCell(row: unknown[], col: number | undefined): unknown {
   if (col === undefined) return null;
   return row[col] ?? null;
@@ -270,6 +273,14 @@ export class FileImportService {
       selectedSheetName,
     });
 
+    console.log(`${reconciliationImportLogPrefix} processFileUpload início`, {
+      fileUploadId: id,
+      runId: upload.runId,
+      sourceType: upload.sourceType,
+      primeiraAba: selectedSheetName,
+      totalAbas: workbookSheetCount,
+    });
+
     if (upload.sourceType === 'BANK') {
       await this.importBank(
         id,
@@ -305,6 +316,12 @@ export class FileImportService {
     if (!upload.storagePath || !upload.runId) {
       throw new HttpError('Dados de arquivo ausentes; faça o upload de novo.', 400);
     }
+    console.log(`${reconciliationImportLogPrefix} confirmStagedImport (commit no banco)`, {
+      fileUploadId,
+      runId: upload.runId,
+      sourceType: upload.sourceType,
+      originalFileName: upload.originalFileName,
+    });
     const t0 = Date.now();
     const absPath = upload.storagePath.startsWith('.')
       ? join(process.cwd(), upload.storagePath)
@@ -348,6 +365,11 @@ export class FileImportService {
       status: UploadStatus.CANCELLED,
       errorMessage:
         'Importação descartada. Nenhum dado deste arquivo foi salvo no banco de conciliação.',
+    });
+    console.log(`${reconciliationImportLogPrefix} cancelStagedImport`, {
+      fileUploadId,
+      runId: u.runId,
+      sourceType: u.sourceType,
     });
   }
 
@@ -531,6 +553,14 @@ export class FileImportService {
           totalDurationMs: Date.now() - t0,
           finishedAt: now,
         });
+        console.log(`${reconciliationImportLogPrefix} importBank → AWAITING_CONFIRM`, {
+          runId,
+          fileUploadId,
+          partialMode,
+          linhasParaGravarDepoisDaConfirmacao: toCreate.length,
+          rejeitadas: rejected,
+          avisoAmostras: warnings.length,
+        });
         return;
       }
       await this.bankRepo.deleteManyByFileUploadId(fileUploadId);
@@ -550,6 +580,13 @@ export class FileImportService {
         totalDurationMs: Date.now() - t0,
         importedAt: nowC,
         finishedAt: nowC,
+      });
+      console.log(`${reconciliationImportLogPrefix} importBank → PARTIAL_SUCCESS (gravado)`, {
+        runId,
+        fileUploadId,
+        partialMode,
+        linhasImportadas: toCreate.length,
+        rejeitadas: rejected,
       });
       return;
     }
@@ -571,6 +608,12 @@ export class FileImportService {
       totalDurationMs: Date.now() - t0,
       importedAt: nowF,
       finishedAt: nowF,
+    });
+    console.log(`${reconciliationImportLogPrefix} importBank → COMPLETED (gravado)`, {
+      runId,
+      fileUploadId,
+      partialMode,
+      linhasImportadas: toCreate.length,
     });
   }
 
@@ -723,6 +766,17 @@ export class FileImportService {
           totalDurationMs: Date.now() - t0,
           finishedAt: now,
         });
+        console.log(
+          `${reconciliationImportLogPrefix} importInternal → AWAITING_CONFIRM (ERP ainda não gravou InternalRecord até confirmar)`,
+          {
+            runId,
+            fileUploadId,
+            partialMode,
+            linhasParaGravarDepoisDaConfirmacao: toCreate.length,
+            rejeitadas: rejected,
+            avisoAmostras: warnings.length,
+          },
+        );
         return;
       }
       await this.internalRepo.deleteManyByFileUploadId(fileUploadId);
@@ -742,6 +796,13 @@ export class FileImportService {
         totalDurationMs: Date.now() - t0,
         importedAt: nowC,
         finishedAt: nowC,
+      });
+      console.log(`${reconciliationImportLogPrefix} importInternal → PARTIAL_SUCCESS (gravado)`, {
+        runId,
+        fileUploadId,
+        partialMode,
+        linhasImportadas: toCreate.length,
+        rejeitadas: rejected,
       });
       return;
     }
@@ -763,6 +824,12 @@ export class FileImportService {
       totalDurationMs: Date.now() - t0,
       importedAt: nowF,
       finishedAt: nowF,
+    });
+    console.log(`${reconciliationImportLogPrefix} importInternal → COMPLETED (gravado)`, {
+      runId,
+      fileUploadId,
+      partialMode,
+      linhasImportadas: toCreate.length,
     });
   }
 
@@ -822,12 +889,27 @@ export class FileImportService {
       prisma.bankRecord.count({ where: { runId } }),
       prisma.internalRecord.count({ where: { runId } }),
     ]);
+    console.log(`${reconciliationImportLogPrefix} finalize solicitado`, {
+      runId,
+      bankRecordCount: bankC,
+      internalRecordCount: intC,
+    });
     if (bankC === 0 || intC === 0) {
+      console.warn(`${reconciliationImportLogPrefix} finalize bloqueado (falta lado banco ou interno gravado)`, {
+        runId,
+        bankRecordCount: bankC,
+        internalRecordCount: intC,
+      });
       throw new HttpError(
         'Importe e confirme a planilha do banco e a do sistema interno antes de gerar os vínculos.',
         400,
       );
     }
-    return generateMatchSuggestionsForRun(runId);
+    const result = await generateMatchSuggestionsForRun(runId);
+    console.log(`${reconciliationImportLogPrefix} finalize OK`, {
+      runId,
+      sugestoesCriadas: result.created,
+    });
+    return result;
   }
 }
