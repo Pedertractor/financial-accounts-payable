@@ -32,6 +32,40 @@ function parseDmyToSaoPauloMidnight(
   );
 }
 
+/**
+ * Converte número serial OLE/Excel (~1..59999, parte inteira) em meia-noite BRT
+ * do **dia civil** que o Excel mostra para essa série. Usa ano/mês/dia **UTC**
+ * do ancoramento `(serial - 25569)` em ms — não projetar esse instante com
+ * `toLocaleString(SP)`, senão `24/04` em UTC-meia-noite vira dia **23** em SP.
+ */
+function calendarDateFromExcelSerialUtc(serial: number): Date | null {
+  const wholeSerial = Math.trunc(serial);
+  const ms = (wholeSerial - EXCEL_UTC_OFFSET) * 86400 * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
+  return parseDmyToSaoPauloMidnight(
+    d.getUTCDate(),
+    d.getUTCMonth(),
+    d.getUTCFullYear(),
+  );
+}
+
+/**
+ * Date devolvido por SheetJS com `cellDates: true`: instante típico = UTC-meia-noite do dia serial → mesmo critério do helper acima.
+ */
+function spreadsheetOleDateLikeToSaoPauloMidnight(d: Date): Date | null {
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
+  return parseDmyToSaoPauloMidnight(
+    d.getUTCDate(),
+    d.getUTCMonth(),
+    d.getUTCFullYear(),
+  );
+}
+
 export function normalizeHeaderCell(value: unknown): string {
   return String(value ?? '')
     .normalize('NFD')
@@ -83,16 +117,11 @@ export function parseFlexibleDate(value: unknown): Date | null {
     if (Number.isNaN(value.getTime())) {
       return null;
     }
-    return startOfSaoPauloDayFromInstant(value);
+    return spreadsheetOleDateLikeToSaoPauloMidnight(value);
   }
   if (typeof value === 'number' && !Number.isNaN(value)) {
     if (value > 0 && value < 100_000) {
-      const ms = (value - EXCEL_UTC_OFFSET) * 86400 * 1000;
-      const d = new Date(ms);
-      if (Number.isNaN(d.getTime())) {
-        return null;
-      }
-      return startOfSaoPauloDayFromInstant(d);
+      return calendarDateFromExcelSerialUtc(value);
     }
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) {
