@@ -39,7 +39,7 @@ export async function getReconciliationRun(
   return reply.status(200).send({ run });
 }
 
-/** Última execução do usuário (reabre triagem sem reimportar). */
+/** Última execução da unidade, qualquer usuário (reabre triagem sem reimportar). */
 const latestRunQuery = z.object({
   unit: z.nativeEnum(UnitType),
 });
@@ -50,7 +50,7 @@ export async function getLatestReconciliationRun(
 ) {
   const q = latestRunQuery.parse(request.query);
   const service = new FileImportService();
-  const run = await service.getLatestRunForUser(request.user.sub, q.unit);
+  const run = await service.getLatestRunForUnit(q.unit);
   return reply.status(200).send({ run: run ?? null });
 }
 

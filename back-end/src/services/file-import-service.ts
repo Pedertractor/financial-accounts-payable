@@ -834,11 +834,11 @@ export class FileImportService {
   }
 
   /**
-   * Execução mais recente do usuário para a empresa: prioriza run com upload mais recente;
+   * Execução mais recente da unidade (compartilhada entre usuários): prioriza run com upload mais recente;
    * senão a execução mais recente (ex.: rascunho sem arquivo ainda).
    * Uma única ida ao banco (antes: até 2 consultas sequenciais).
    */
-  async getLatestRunForUser(userId: string, unit: UnitType) {
+  async getLatestRunForUnit(unit: UnitType) {
     type Row = {
       id: string;
       title: string | null;
@@ -850,16 +850,14 @@ export class FileImportService {
         SELECT r.id, r.title, r.status, r.unit
         FROM "FileUpload" fu
         INNER JOIN "ReconciliationRun" r ON r.id = fu."runId"
-        WHERE r."createdById" = ${userId}
-          AND r.unit = ${unit}::"UnitType"
+        WHERE r.unit = ${unit}::"UnitType"
         ORDER BY fu."updatedAt" DESC
         LIMIT 1
       ),
       fallback_pick AS (
         SELECT r.id, r.title, r.status, r.unit
         FROM "ReconciliationRun" r
-        WHERE r."createdById" = ${userId}
-          AND r.unit = ${unit}::"UnitType"
+        WHERE r.unit = ${unit}::"UnitType"
         ORDER BY r."createdAt" DESC
         LIMIT 1
       )
@@ -880,7 +878,7 @@ export class FileImportService {
    */
   async finalizeRunWithSuggestions(runId: string, userId: string) {
     const run = await prisma.reconciliationRun.findFirst({
-      where: { id: runId, createdById: userId },
+      where: { id: runId },
     });
     if (!run) {
       throw new HttpError('Execução não encontrada ou acesso negado', 404);
@@ -891,6 +889,7 @@ export class FileImportService {
     ]);
     console.log(`${reconciliationImportLogPrefix} finalize solicitado`, {
       runId,
+      requestedByUserId: userId,
       bankRecordCount: bankC,
       internalRecordCount: intC,
     });

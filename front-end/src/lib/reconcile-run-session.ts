@@ -21,7 +21,7 @@ export function vinculosReconciliationRunQueryKey(unit: ConciliationUnit) {
 }
 
 /**
- * Resolve o run da triagem: valida o id em localStorage ou busca o último run do usuário na empresa.
+ * Resolve o run da triagem: valida o id em localStorage ou busca o último run da unidade (compartilhado).
  */
 export async function fetchVinculosReconciliationRunId(
   unit: ConciliationUnit,
