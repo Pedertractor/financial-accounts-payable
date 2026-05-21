@@ -1,19 +1,19 @@
 name: project-financial-accounts-payable
 services:
-  project-financial-accounts-payable-back-end:
-    build: .
-    container_name: project-financial-accounts-payable-back-end
-    restart: always
-    ports:
-      - 3135:3135
-    env_file:
-      - .env
-    depends_on:
-      - project-financial-accounts-payable-database
-    networks:
-      - project-financial-accounts-payable-network
-    volumes:
-      - project-financial-accounts-payable-uploads:/usr/src/app/uploads
+  # project-financial-accounts-payable-back-end:
+  #   build: .
+  #   container_name: project-financial-accounts-payable-back-end
+  #   restart: always
+  #   ports:
+  #     - 3135:3135
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - project-financial-accounts-payable-database
+  #   networks:
+  #     - project-financial-accounts-payable-network
+  #   volumes:
+  #     - project-financial-accounts-payable-uploads:/usr/src/app/uploads
 
   project-financial-accounts-payable-database:
     image: postgres:16
@@ -21,18 +21,18 @@ services:
     ports:
       - 5438:5432
     environment:
-      - POSTGRES_USER=financial-accounts-payable
-      - POSTGRES_PASSWORD=financial-accounts-payable
+      - POSTGRES_USER=docker
+      - POSTGRES_PASSWORD=docker
       - POSTGRES_DB=financial-accounts-payable
 
-    networks:
-      - project-financial-accounts-payable-network
-    volumes:
-      - project-financial-accounts-payable-postgres-data:/var/lib/postgresql/data
+    # networks:
+    #   - project-financial-accounts-payable-network
+    # volumes:
+    #   - project-financial-accounts-payable-postgres-data:/var/lib/postgresql/data
 
-volumes:
-  project-financial-accounts-payable-postgres-data:
-  project-financial-accounts-payable-uploads:
-networks:
-  project-financial-accounts-payable-network:
-    name: project-financial-accounts-payable-network
+# volumes:
+#   project-financial-accounts-payable-postgres-data:
+#   project-financial-accounts-payable-uploads:
+# networks:
+#   project-financial-accounts-payable-network:
+#     name: project-financial-accounts-payable-network

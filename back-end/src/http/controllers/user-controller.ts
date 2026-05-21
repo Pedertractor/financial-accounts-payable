@@ -2,6 +2,10 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { UserService } from '../../services/user-service.js';
 import { UnitType, UserRole } from '../../generated/prisma/enums.js';
 import z from 'zod';
+import {
+  isOrionApplicationsConfigured,
+  sendOrionApplicationEvent,
+} from '../../integrations/orion-applications-events.js';
 
 export async function loginUser(request: FastifyRequest, reply: FastifyReply) {
   const bodySchema = z.object({
@@ -66,6 +70,17 @@ export async function completeFirstPasswordUser(
 export async function getMeUser(request: FastifyRequest, reply: FastifyReply) {
   const usersService = new UserService();
   const user = await usersService.getMe(request.user.sub);
+
+  if (isOrionApplicationsConfigured()) {
+    sendOrionApplicationEvent({
+      userId: user.id,
+      userName: user.name,
+      cardNumberUser: user.cardNumber,
+      ip: request.ip,
+    }).catch((err: unknown) => {
+      request.log.warn({ err }, 'orion applications event (GET /me) falhou');
+    });
+  }
 
   return reply.status(200).send({ user });
 }

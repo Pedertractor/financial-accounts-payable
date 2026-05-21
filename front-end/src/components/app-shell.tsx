@@ -1,4 +1,4 @@
-import { useMemo, type MouseEvent } from 'react'
+import { useCallback, useEffect, useState, type MouseEvent } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router'
 import { AppFooter } from '@/components/app-footer'
 import { AppSidebar } from '@/components/app-sidebar'
@@ -16,6 +16,12 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import {
+  ApiRequestError,
+  clearStoredSession,
+  getMeUserRequest,
+  getStoredToken,
+} from '@/lib/api'
 import { clearReconcileClientState } from '@/lib/reconcile-storage'
 
 type StoredUser = { name: string; role?: string }
@@ -40,18 +46,85 @@ function segmentTitle(pathname: string): string {
   return 'TractorPay'
 }
 
+/** Respostas do GET /users/me que indicam sessão inválida ou usuário sem acesso. */
+function isSessionFatalStatus(status: number | null): boolean {
+  return status === 401 || status === 403 || status === 404
+}
+
 function AppShellMain() {
   const navigate = useNavigate()
   const location = useLocation()
-  const user = useMemo(() => readUser(), [])
+  const [user, setUser] = useState<StoredUser>(() => readUser())
+  const [sessionReady, setSessionReady] = useState(false)
   const pageTitle = segmentTitle(location.pathname)
   const { open, setOpen, isMobile, openMobile, setOpenMobile } = useSidebar()
 
-  function onSignOut() {
-    localStorage.removeItem('reconcile_token')
-    localStorage.removeItem('reconcile_user')
+  const exitToLogin = useCallback(() => {
+    clearStoredSession()
     clearReconcileClientState()
     navigate('/login', { replace: true })
+  }, [navigate])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function validateSession() {
+      if (!getStoredToken()) {
+        exitToLogin()
+        return
+      }
+      try {
+        const { user: u } = await getMeUserRequest()
+        if (cancelled) return
+        localStorage.setItem('reconcile_user', JSON.stringify(u))
+        setUser({ name: u.name, role: u.role })
+      } catch (e) {
+        if (cancelled) return
+        const status = e instanceof ApiRequestError ? e.status : null
+        if (isSessionFatalStatus(status)) {
+          exitToLogin()
+          return
+        }
+      }
+      if (!cancelled) setSessionReady(true)
+    }
+
+    void validateSession()
+    return () => {
+      cancelled = true
+    }
+  }, [exitToLogin])
+
+  useEffect(() => {
+    let debounce: ReturnType<typeof setTimeout> | undefined
+
+    function onVisibility() {
+      if (document.visibilityState !== 'visible') return
+      if (!getStoredToken()) return
+      clearTimeout(debounce)
+      debounce = setTimeout(() => {
+        void (async () => {
+          try {
+            const { user: u } = await getMeUserRequest()
+            localStorage.setItem('reconcile_user', JSON.stringify(u))
+            setUser({ name: u.name, role: u.role })
+          } catch (e) {
+            const status = e instanceof ApiRequestError ? e.status : null
+            if (isSessionFatalStatus(status)) exitToLogin()
+          }
+        })()
+      }, 400)
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      clearTimeout(debounce)
+    }
+  }, [exitToLogin])
+
+  function onSignOut() {
+    exitToLogin()
   }
 
   function handleInsetClick(e: MouseEvent<HTMLDivElement>) {
@@ -67,6 +140,14 @@ function AppShellMain() {
         setOpen(false)
       }
     }
+  }
+
+  if (!sessionReady) {
+    return (
+      <div className="bg-background text-muted-foreground flex min-h-svh items-center justify-center text-sm">
+        Validando sessão…
+      </div>
+    )
   }
 
   return (

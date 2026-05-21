@@ -13,6 +13,10 @@ const envSchema = z.object({
   UPLOAD_DIR: z.string().default('./uploads'),
   /** Tamanho máximo do arquivo (bytes). Padrão 10 MB. */
   MAX_UPLOAD_BYTES: z.coerce.number().int().default(10 * 1024 * 1024),
+  /** Base URL do Orion (ex.: https://orion.exemplo.com), sem barra final. */
+  ORION_URL: z.string().optional(),
+  /** Token da app no Orion (formato uuid.secret), enviado como Bearer. */
+  ORION_APP_TOKEN: z.string().optional(),
 });
 
 const _env = envSchema.safeParse(process.env);

@@ -29,8 +29,24 @@ export function requestInitWithTimeout(
   return { signal: querySignal };
 }
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+  }
+}
+
 export function getStoredToken(): string | null {
   return localStorage.getItem('reconcile_token');
+}
+
+/** Remove token e dados de usuário do armazenamento local (logout). */
+export function clearStoredSession(): void {
+  localStorage.removeItem('reconcile_token');
+  localStorage.removeItem('reconcile_user');
 }
 
 export function authHeader(): Record<string, string> {
@@ -68,7 +84,7 @@ export async function apiJson<T>(
       typeof (data as { error?: string }).error === 'string'
         ? (data as { error: string }).error
         : `HTTP ${res.status}`;
-    throw new Error(msg);
+    throw new ApiRequestError(msg, res.status);
   }
   return data as T;
 }
