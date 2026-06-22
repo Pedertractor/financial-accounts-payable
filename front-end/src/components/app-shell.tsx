@@ -57,7 +57,7 @@ function AppShellMain() {
   const [user, setUser] = useState<StoredUser>(() => readUser())
   const [sessionReady, setSessionReady] = useState(false)
   const pageTitle = segmentTitle(location.pathname)
-  const { open, setOpen, isMobile, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, openMobile, setOpenMobile } = useSidebar()
 
   const exitToLogin = useCallback(() => {
     clearStoredSession()
@@ -131,14 +131,8 @@ function AppShellMain() {
     if ((e.target as HTMLElement).closest?.('[data-sidebar="trigger"]')) {
       return
     }
-    if (isMobile) {
-      if (openMobile) {
-        setOpenMobile(false)
-      }
-    } else {
-      if (open) {
-        setOpen(false)
-      }
+    if (isMobile && openMobile) {
+      setOpenMobile(false)
     }
   }
 
