@@ -10,6 +10,7 @@ import { UserPrismaRepository } from '../src/repositories/prisma/user-repository
 const DEFAULT_ADMINS: { cardNumber: string; unit: UnitType }[] = [
   { cardNumber: '5487', unit: 'PEDERTRACTOR' },
   { cardNumber: '5052', unit: 'PEDERTRACTOR' },
+  { cardNumber: '2282', unit: 'TRACTOR' },
 ];
 
 async function main() {
