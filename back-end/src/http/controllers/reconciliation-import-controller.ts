@@ -55,7 +55,7 @@ export async function getLatestReconciliationRun(
 }
 
 /**
- * Depois de importar banco e ERP, grava no banco as sugestões de vínculo e triagem.
+ * Depois de importar banco e/ou ERP, grava no banco as sugestões de vínculo e triagem.
  * (A importação por arquivo deixa de disparar o match automaticamente.)
  */
 export async function finalizeReconciliationRun(
@@ -64,13 +64,22 @@ export async function finalizeReconciliationRun(
 ) {
   const params = z.object({ runId: z.string().min(1) }).parse(request.params);
   const service = new FileImportService();
-  const { created } = await service.finalizeRunWithSuggestions(
-    params.runId,
-    request.user.sub,
-  );
+  const { created, bankRecordCount, internalRecordCount } =
+    await service.finalizeRunWithSuggestions(
+      params.runId,
+      request.user.sub,
+    );
+  const message =
+    bankRecordCount > 0 && internalRecordCount > 0
+      ? `${created} sugestões de vínculo gravadas (banco e interno).`
+      : bankRecordCount > 0
+        ? `${created} sugestões só banco gravadas. Importe o interno depois para parear cruzados.`
+        : `${created} sugestões só interno gravadas. Importe o banco depois para parear cruzados.`;
   return reply.status(200).send({
     created,
-    message: 'Sugestões de vínculo e triagem gravadas para esta execução.',
+    bankRecordCount,
+    internalRecordCount,
+    message,
   });
 }
 

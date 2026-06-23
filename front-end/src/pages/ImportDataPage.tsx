@@ -415,6 +415,7 @@ export function ImportDataPage() {
   const [bank, setBank] = useState<TrackState>(initial)
   const [internal, setInternal] = useState<TrackState>(initial)
   const [vinculoSuccess, setVinculoSuccess] = useState(false)
+  const [vinculoSuccessMessage, setVinculoSuccessMessage] = useState<string | null>(null)
 
   const { data: runId, isLoading: runLoading } = useQuery({
     queryKey: ['reconciliation-run', 'import-page', importUnit],
@@ -452,6 +453,7 @@ export function ImportDataPage() {
     setBank(initial)
     setInternal(initial)
     setVinculoSuccess(false)
+    setVinculoSuccessMessage(null)
     clearStoredReconciliationRunId()
     void queryClient.invalidateQueries({ queryKey: ['reconciliation-run', 'import-page', u] })
   }
@@ -548,8 +550,9 @@ export function ImportDataPage() {
       }
       return finalizeReconciliationRun(runId)
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       setVinculoSuccess(true)
+      setVinculoSuccessMessage(data.message)
       void queryClient.invalidateQueries({ queryKey: ['reconciliation-suggestions'] })
       void queryClient.invalidateQueries({ queryKey: ['reconciliation-run', 'vinculos'] })
       void queryClient.invalidateQueries({ queryKey: ['reconciliation-run', 'import-page'] })
@@ -564,6 +567,7 @@ export function ImportDataPage() {
       setBank(initial)
       setInternal(initial)
       setVinculoSuccess(false)
+      setVinculoSuccessMessage(null)
       finalizeImportMutation.reset()
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
     }, 5000)
@@ -669,11 +673,12 @@ export function ImportDataPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight">Importar Dados</h1>
           <p className="text-muted-foreground mt-1 w-full text-pretty text-sm">
-            Envie e confirme a planilha do banco e a do sistema interno (Epron). Escolha a <span className="text-foreground font-medium">empresa</span> antes de enviar as
-            planilhas. Quando as duas
-            estiverem concluídas, use <span className="text-foreground font-medium">Gerar vínculo</span>{' '}
-            para gravar as sugestões no banco. A triagem fica disponível em Conciliação a qualquer
-            momento.
+            Envie e confirme a planilha do banco e/ou a do sistema interno (Epron). Escolha a{' '}
+            <span className="text-foreground font-medium">empresa</span> antes de enviar as planilhas.
+            Com ao menos uma planilha concluída, use{' '}
+            <span className="text-foreground font-medium">Gerar vínculo</span> para gravar as sugestões
+            no banco. Vínculos cruzados entre banco e interno exigem os dois lados. A triagem fica
+            disponível em Conciliação a qualquer momento.
           </p>
         </div>
         {importUnit == null ? (
@@ -729,7 +734,7 @@ export function ImportDataPage() {
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
                 <CardTitle className="text-base">Arquivos carregados</CardTitle>
                 <span className="text-muted-foreground text-xs">
-                  {readyCount} de 2 arquivos concluídos
+                  {readyCount} de 2 planilhas concluídas (mín. 1 para gerar vínculo)
                 </span>
               </CardHeader>
               <CardContent className="flex flex-col gap-0">
@@ -847,6 +852,13 @@ export function ImportDataPage() {
                         ? finalizeImportMutation.error.message
                         : 'Não foi possível gerar os vínculos.'}
                     </p>
+                  ) : vinculoSuccess && vinculoSuccessMessage ? (
+                    <p
+                      className="max-w-full text-right text-xs text-emerald-700 dark:text-emerald-400"
+                      role="status"
+                    >
+                      {vinculoSuccessMessage}
+                    </p>
                   ) : null}
                   <Button
                     type="button"
@@ -858,7 +870,7 @@ export function ImportDataPage() {
                     )}
                     disabled={
                       importUnit == null ||
-                      readyCount < 2 ||
+                      readyCount < 1 ||
                       !runId ||
                       busy ||
                       finalizeImportMutation.isPending ||
@@ -867,6 +879,7 @@ export function ImportDataPage() {
                     onClick={() => {
                       finalizeImportMutation.reset()
                       setVinculoSuccess(false)
+                      setVinculoSuccessMessage(null)
                       void finalizeImportMutation.mutate()
                     }}
                   >

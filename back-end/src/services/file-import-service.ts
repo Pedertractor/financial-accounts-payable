@@ -873,8 +873,8 @@ export class FileImportService {
   }
 
   /**
-   * Gera e persiste sugestões de vínculo no banco (chamada explícita após importar banco + interno).
-   * Exige lançamentos dos dois lados.
+   * Gera e persiste sugestões de vínculo no banco (chamada explícita após importar).
+   * Exige ao menos um lado (banco ou interno) com lançamentos gravados.
    */
   async finalizeRunWithSuggestions(runId: string, userId: string) {
     const run = await prisma.reconciliationRun.findFirst({
@@ -893,14 +893,14 @@ export class FileImportService {
       bankRecordCount: bankC,
       internalRecordCount: intC,
     });
-    if (bankC === 0 || intC === 0) {
-      console.warn(`${reconciliationImportLogPrefix} finalize bloqueado (falta lado banco ou interno gravado)`, {
+    if (bankC === 0 && intC === 0) {
+      console.warn(`${reconciliationImportLogPrefix} finalize bloqueado (nenhum lançamento gravado)`, {
         runId,
         bankRecordCount: bankC,
         internalRecordCount: intC,
       });
       throw new HttpError(
-        'Importe e confirme a planilha do banco e a do sistema interno antes de gerar os vínculos.',
+        'Importe e confirme ao menos uma planilha (banco ou sistema interno) antes de gerar os vínculos.',
         400,
       );
     }
@@ -908,7 +908,9 @@ export class FileImportService {
     console.log(`${reconciliationImportLogPrefix} finalize OK`, {
       runId,
       sugestoesCriadas: result.created,
+      bankRecordCount: bankC,
+      internalRecordCount: intC,
     });
-    return result;
+    return { ...result, bankRecordCount: bankC, internalRecordCount: intC };
   }
 }
