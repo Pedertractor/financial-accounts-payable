@@ -1,0 +1,38 @@
+info:
+  name: finalize run
+  type: http
+  seq: 6
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/finalize"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("deve conter created e message", function () {
+          expect(res.body).to.have.property("created");
+          expect(res.body.created).to.be.a("number");
+          expect(res.body).to.have.property("message");
+          expect(res.body).to.have.property("bankRecordCount");
+          expect(res.body).to.have.property("internalRecordCount");
+        });
+
+docs: |-
+  Gera sugestões de vínculo/triagem para a execução `RUN_ID`.
+  Exige ao menos uma planilha confirmada (banco ou interno).
+  Com só um lado, cria sugestões `BANK_ONLY` / `INTERNAL_ONLY`.
+  Com os dois lados, pareia cruzados normalmente.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

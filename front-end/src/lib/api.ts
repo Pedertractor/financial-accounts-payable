@@ -272,12 +272,17 @@ export async function getLatestReconciliationRun(
 }
 
 /**
- * Após importar banco e ERP, grava no banco as sugestões de vínculo e triagem.
+ * Após importar banco e/ou interno, grava no banco as sugestões de vínculo e triagem.
  * (Não dispara automaticamente após cada arquivo.)
  */
 export async function finalizeReconciliationRun(
   runId: string,
-): Promise<{ created: number; message: string }> {
+): Promise<{
+  created: number
+  message: string
+  bankRecordCount: number
+  internalRecordCount: number
+}> {
   return apiJson(`/reconciliation/runs/${runId}/finalize`, { method: 'POST' });
 }
 
