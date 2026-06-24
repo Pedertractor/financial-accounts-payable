@@ -244,6 +244,24 @@ export type ReconciliationRunDto = {
   title: string | null
   status: string
   unit: 'PEDERTRACTOR' | 'TRACTOR'
+  referenceStartDate?: string | null
+  referenceEndDate?: string | null
+  createdAt?: string
+}
+
+export type ReconciliationRunCloseSummary = {
+  openSuggestionsCount: number
+  bankRecordCount: number
+  internalRecordCount: number
+  warnings: string[]
+}
+
+export function reconciliationRunDetailQk(runId: string) {
+  return ['reconciliation-run', 'detail', runId] as const
+}
+
+export function reconciliationRunClosePreviewQk(runId: string) {
+  return ['reconciliation-run', 'close-preview', runId] as const
 }
 
 export async function createReconciliationRun(body: {
@@ -272,6 +290,27 @@ export async function getLatestReconciliationRun(
   const sp = new URLSearchParams()
   sp.set('unit', params.unit)
   return apiJson(`/reconciliation/runs/latest?${sp.toString()}`, init)
+}
+
+export async function getReconciliationRunClosePreview(
+  runId: string,
+): Promise<{ summary: ReconciliationRunCloseSummary }> {
+  return apiJson(`/reconciliation/runs/${runId}/close-preview`)
+}
+
+export async function closeReconciliationRun(
+  runId: string,
+): Promise<{
+  run: ReconciliationRunDto
+  summary: ReconciliationRunCloseSummary
+}> {
+  return apiJson(`/reconciliation/runs/${runId}/close`, { method: 'POST' })
+}
+
+export async function reopenReconciliationRun(
+  runId: string,
+): Promise<{ run: ReconciliationRunDto }> {
+  return apiJson(`/reconciliation/runs/${runId}/reopen`, { method: 'POST' })
 }
 
 /**

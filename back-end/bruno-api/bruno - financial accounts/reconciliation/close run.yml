@@ -1,0 +1,31 @@
+info:
+  name: close run
+  type: http
+  seq: 9
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/close"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("run encerrado", function () {
+          expect(res.body.run.status).to.equal("CLOSED");
+        });
+
+docs: |-
+  Encerra a conciliação (status CLOSED). Novos uploads neste run são bloqueados.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -1,4 +1,5 @@
 import {
+  createReconciliationRun,
   getLatestReconciliationRun,
   getReconciliationRun,
   requestInitWithTimeout,
@@ -20,8 +21,12 @@ export function vinculosReconciliationRunQueryKey(unit: ConciliationUnit) {
   return ['reconciliation-run', 'vinculos', unit] as const;
 }
 
+export function importReconciliationRunQueryKey(unit: ConciliationUnit) {
+  return ['reconciliation-run', 'import-page', unit] as const;
+}
+
 /**
- * Resolve o run da triagem: valida o id em localStorage ou busca o último run da unidade (compartilhado).
+ * Resolve o run da triagem: valida o id em localStorage (inclui encerrado, para consulta).
  */
 export async function fetchVinculosReconciliationRunId(
   unit: ConciliationUnit,
@@ -46,4 +51,39 @@ export async function fetchVinculosReconciliationRunId(
     return latest.id;
   }
   return null;
+}
+
+/**
+ * Run aberto para importação: ignora id encerrado no storage; cria novo se necessário.
+ */
+export async function resolveImportReconciliationRunId(
+  unit: ConciliationUnit,
+  signal?: AbortSignal,
+): Promise<string> {
+  const rInit = requestInitWithTimeout(signal, 45_000);
+  const existing = getStoredReconciliationRunId();
+  if (existing) {
+    try {
+      const { run } = await getReconciliationRun(existing, rInit);
+      if (run.unit === unit && run.status !== 'CLOSED') {
+        return existing;
+      }
+      if (run.status === 'CLOSED') {
+        clearStoredReconciliationRunId();
+      }
+    } catch {
+      clearStoredReconciliationRunId();
+    }
+  }
+  const { run: latest } = await getLatestReconciliationRun({ unit }, rInit);
+  if (latest) {
+    setStoredReconciliationRunId(latest.id);
+    return latest.id;
+  }
+  const { run } = await createReconciliationRun({
+    title: 'Importação',
+    unit,
+  });
+  setStoredReconciliationRunId(run.id);
+  return run.id;
 }

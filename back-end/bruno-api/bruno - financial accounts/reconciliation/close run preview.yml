@@ -1,0 +1,31 @@
+info:
+  name: close run preview
+  type: http
+  seq: 8
+
+http:
+  method: GET
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/close-preview"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+runtime:
+  scripts:
+    - type: tests
+      code: |-
+        test("deve retornar 200", function () {
+          expect(res.status).to.equal(200);
+        });
+        test("deve conter summary", function () {
+          expect(res.body).to.have.property("summary");
+        });
+
+docs: |-
+  Resumo antes de encerrar: sugestões em aberto e avisos (ex.: só banco importado).
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

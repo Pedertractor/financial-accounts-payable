@@ -45,24 +45,26 @@ import {
   type FileUploadStatus,
   cancelStagedFileUpload,
   confirmStagedFileUpload,
-  createReconciliationRun,
   deleteImportRecords,
   finalizeReconciliationRun,
-  getLatestReconciliationRun,
   getReconciliationRun,
   listRecentFileUploads,
   pollFileUpload,
+  reconciliationRunDetailQk,
   uploadReconciliationFile,
 } from '@/lib/api'
 import {
-  getStoredReconciliationRunId,
-  setStoredReconciliationRunId,
+  importReconciliationRunQueryKey,
+  resolveImportReconciliationRunId,
+} from '@/lib/reconcile-run-session'
+import {
   clearStoredReconciliationRunId,
   getStoredConciliationUnitForImport,
   setStoredConciliationUnit,
   type ConciliationUnit,
 } from '@/lib/reconcile-storage'
 import { cn } from '@/lib/utils'
+import { ReconciliationRunControls } from '@/components/reconciliation-run-controls'
 
 type TrackState = {
   fileName: string | null
@@ -467,34 +469,29 @@ export function ImportDataPage() {
   const [vinculoSuccessMessage, setVinculoSuccessMessage] = useState<string | null>(null)
 
   const { data: runId, isLoading: runLoading } = useQuery({
-    queryKey: ['reconciliation-run', 'import-page', importUnit],
-    queryFn: async () => {
-      if (!importUnit) {
-        return null
-      }
-      const existing = getStoredReconciliationRunId()
-      if (existing) {
-        try {
-          const { run } = await getReconciliationRun(existing)
-          if (run.unit === importUnit) {
-            return existing
-          }
-        } catch {
-          clearStoredReconciliationRunId()
-        }
-      }
-      const { run: latest } = await getLatestReconciliationRun({ unit: importUnit })
-      if (latest) {
-        setStoredReconciliationRunId(latest.id)
-        return latest.id
-      }
-      const { run } = await createReconciliationRun({ title: 'Importação', unit: importUnit })
-      setStoredReconciliationRunId(run.id)
-      return run.id
-    },
+    queryKey: importUnit != null ? importReconciliationRunQueryKey(importUnit) : ['reconciliation-run', 'import-page', 'none'],
+    queryFn: ({ signal }) => resolveImportReconciliationRunId(importUnit!, signal),
     enabled: importUnit != null,
     staleTime: Number.POSITIVE_INFINITY,
   })
+
+  const { data: activeRunData } = useQuery({
+    queryKey: reconciliationRunDetailQk(runId ?? ''),
+    queryFn: () => getReconciliationRun(runId!),
+    enabled: runId != null,
+  })
+
+  const runClosed = activeRunData?.run.status === 'CLOSED'
+
+  function handleRunChanged(newRunId: string) {
+    setBank(initial)
+    setInternal(initial)
+    setVinculoSuccess(false)
+    setVinculoSuccessMessage(null)
+    if (importUnit) {
+      queryClient.setQueryData(importReconciliationRunQueryKey(importUnit), newRunId)
+    }
+  }
 
   function handleImportUnitChange(u: ConciliationUnit) {
     setImportUnit(u)
@@ -504,7 +501,7 @@ export function ImportDataPage() {
     setVinculoSuccess(false)
     setVinculoSuccessMessage(null)
     clearStoredReconciliationRunId()
-    void queryClient.invalidateQueries({ queryKey: ['reconciliation-run', 'import-page', u] })
+    void queryClient.invalidateQueries({ queryKey: importReconciliationRunQueryKey(u) })
   }
 
   const { data: recentData, isLoading: recentLoading } = useQuery({
@@ -757,6 +754,12 @@ export function ImportDataPage() {
               value={importUnit}
               onSelect={handleImportUnitChange}
             />
+            <ReconciliationRunControls
+              runId={runId}
+              unit={importUnit}
+              context="import"
+              onRunChanged={handleRunChanged}
+            />
             <div className="grid gap-4 md:grid-cols-2">
               <DropCard
                 title="Planilha do banco"
@@ -764,6 +767,7 @@ export function ImportDataPage() {
                 icon={Building2}
                 inputId="bank-in"
                 disabled={
+                  runClosed ||
                   !importUnit ||
                   bank.status === 'uploading' ||
                   bank.status === 'processing' ||
@@ -780,6 +784,7 @@ export function ImportDataPage() {
                 icon={Database}
                 inputId="internal-in"
                 disabled={
+                  runClosed ||
                   !importUnit ||
                   internal.status === 'uploading' ||
                   internal.status === 'processing' ||
@@ -931,6 +936,7 @@ export function ImportDataPage() {
                     )}
                     disabled={
                       importUnit == null ||
+                      runClosed ||
                       readyCount < 1 ||
                       !runId ||
                       busy ||

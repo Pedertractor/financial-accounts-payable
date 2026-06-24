@@ -31,6 +31,7 @@ import { BankRecordPrismaRepository } from '../repositories/prisma/bank-record-r
 import { FileUploadPrismaRepository } from '../repositories/prisma/file-upload-repository.js';
 import { InternalRecordPrismaRepository } from '../repositories/prisma/internal-record-repository.js';
 import { ReconciliationRunPrismaRepository } from '../repositories/prisma/reconciliation-run-repository.js';
+import { ReconciliationRunService } from './reconciliation-run-service.js';
 import {
   commitBankImportDedup,
   commitInternalImportDedup,
@@ -221,6 +222,7 @@ export class FileImportService {
     originalFileName: string;
     mimetype: string;
   }): Promise<{ fileUploadId: string }> {
+    await new ReconciliationRunService().assertRunOpenForImport(params.runId);
     await this.getRunOrThrow(params.runId);
     await this.uploadRepo.cancelAwaitingStagedByRunIdAndSource(
       params.runId,
@@ -354,6 +356,9 @@ export class FileImportService {
 
   async confirmStagedImport(fileUploadId: string) {
     const upload = await this.getUploadOrThrow(fileUploadId);
+    if (upload.runId) {
+      await new ReconciliationRunService().assertRunOpenForImport(upload.runId);
+    }
     if (upload.status !== UploadStatus.AWAITING_CONFIRM) {
       throw new HttpError('Nada para confirmar neste upload ou já foi processado.', 400);
     }
@@ -953,6 +958,7 @@ export class FileImportService {
         FROM "FileUpload" fu
         INNER JOIN "ReconciliationRun" r ON r.id = fu."runId"
         WHERE r.unit = ${unit}::"UnitType"
+          AND r.status <> 'CLOSED'::"RunStatus"
         ORDER BY fu."updatedAt" DESC
         LIMIT 1
       ),
@@ -960,6 +966,7 @@ export class FileImportService {
         SELECT r.id, r.title, r.status, r.unit
         FROM "ReconciliationRun" r
         WHERE r.unit = ${unit}::"UnitType"
+          AND r.status <> 'CLOSED'::"RunStatus"
         ORDER BY r."createdAt" DESC
         LIMIT 1
       )
@@ -979,6 +986,7 @@ export class FileImportService {
    * Exige ao menos um lado (banco ou interno) com lançamentos gravados.
    */
   async finalizeRunWithSuggestions(runId: string, userId: string) {
+    await new ReconciliationRunService().assertRunOpenForImport(runId);
     const run = await prisma.reconciliationRun.findFirst({
       where: { id: runId },
     });

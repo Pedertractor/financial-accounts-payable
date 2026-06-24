@@ -27,6 +27,11 @@ import {
   uploadInternalFile,
 } from '../controllers/reconciliation-import-controller.js';
 import {
+  closeReconciliationRun,
+  getReconciliationRunClosePreview,
+  reopenReconciliationRun,
+} from '../controllers/reconciliation-run-controller.js';
+import {
   confirmSuggestion,
   confirmSuggestionsBatch,
   getBankOnlyInternalSumCandidates,
@@ -86,6 +91,21 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     '/runs/:runId',
     { preHandler: requireFinancial },
     getReconciliationRun,
+  );
+  app.get(
+    '/runs/:runId/close-preview',
+    { preHandler: requireFinancial },
+    getReconciliationRunClosePreview,
+  );
+  app.post(
+    '/runs/:runId/close',
+    { preHandler: requireFinancial },
+    closeReconciliationRun,
+  );
+  app.post(
+    '/runs/:runId/reopen',
+    { preHandler: [authMiddleware, roleMiddleware([UserRole.ADMIN])] },
+    reopenReconciliationRun,
   );
   app.post(
     '/runs/:runId/finalize',

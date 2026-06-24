@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/table';
 import { AccountPaidConfirmDialog } from '@/components/account-paid-confirm-dialog';
 import { PaymentInstructionModal } from '@/components/payment-instruction-modal';
+import { ReconciliationRunControls } from '@/components/reconciliation-run-controls';
 import { SuggestionDetailModal } from '@/components/suggestion-detail-modal';
 import {
   Tooltip,
@@ -1043,6 +1044,19 @@ export function VinculosPage() {
 
   return (
     <div className='bg-muted/20 flex min-h-0 flex-1 flex-col gap-4 p-3 md:p-6'>
+      {runId ? (
+        <ReconciliationRunControls
+          runId={runId}
+          unit={unitFilter}
+          context='vinculos'
+          onRunChanged={(id) => {
+            queryClient.setQueryData(
+              ['reconciliation-run', 'vinculos', unitFilter],
+              id,
+            );
+          }}
+        />
+      ) : null}
       <div className='flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between'>
         <div className='min-w-0'>
           <div className='flex items-center gap-2'>

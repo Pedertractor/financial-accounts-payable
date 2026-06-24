@@ -14,4 +14,11 @@ export class ReconciliationRunPrismaRepository {
   async create(data: Prisma.ReconciliationRunCreateInput) {
     return this.prisma.reconciliationRun.create({ data });
   }
+
+  async updateById(id: string, data: Prisma.ReconciliationRunUpdateInput) {
+    return this.prisma.reconciliationRun.update({
+      where: { id },
+      data,
+    });
+  }
 }
