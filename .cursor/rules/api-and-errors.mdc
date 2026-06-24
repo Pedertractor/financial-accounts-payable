@@ -1,0 +1,52 @@
+---
+description: Contrato de API, erros e integração front-back
+globs: back-end/**/*.ts,front-end/src/lib/**/*.ts,front-end/src/pages/**/*.{ts,tsx},front-end/src/components/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# API e erros
+
+## Back-end
+
+### Erros
+
+- Domínio / validação de negócio: `throw new HttpError(message, statusCode, details?)`
+- **Nunca** `throw new Error()` em fluxo de request — vira 500 com mensagem interna
+- Middleware auth: 401/403 inline (padrão atual) ou `HttpError` — não misturar estilos no mesmo handler
+
+### Respostas
+
+- Erro: `{ error: string, ...details? }`
+- Sucesso: `{ entity }` ou `{ entities }` — manter padrão existente (sem envelope `{ data, meta }` global)
+- Nunca retornar `passwordHash` nem campos internos; usar DTO (`toPublicUserDto`, `toUploadStatusDto`)
+
+### Validação Zod
+
+- Enums Prisma: `z.nativeEnum(MyEnum)` (não `z.enum()` no enum object)
+- Schemas reutilizados: extrair para o service ou `lib/schemas/` quando usados em mais de um lugar
+- Erros Zod: handler global retorna só a primeira mensagem — mensagens devem ser claras para o usuário
+
+### Rotas
+
+- Prefixo global: `/api`
+- Paths em inglês, kebab-case: `/api/reconciliation/runs/:runId/suggestions`
+- Endpoint novo → adicionar request em `back-end/bruno-api/`
+
+## Front-end
+
+### API
+
+- Toda chamada via `lib/api.ts` (`apiJson`, funções `*Request` / verbos de domínio)
+- Tipos de resposta exportados de `api.ts` (ou `lib/types/` se o módulo crescer)
+- Erros: propagar `ApiRequestError`; não engolir com `catch {}` vazio
+
+### React Query
+
+- Query keys: factory por domínio (`paymentVincListQk`, `suggestionsQk`)
+- Invalidar com a **mesma** factory usada na query — evitar prefixos parciais que deixam cache stale
+- Mutations: `onSuccess` → `invalidateQueries` com key completa
+
+### Sessão
+
+- 401/403/404 em `getMeUserRequest`: tratar em `app-shell.tsx` (logout + redirect)
+- Não duplicar lógica de logout por página

@@ -1,0 +1,46 @@
+---
+description: Nomenclatura, estilo, git e arquivos ignorados
+globs: back-end/**/*,front-end/**/*
+alwaysApply: false
+---
+
+# Convenções
+
+## Nomenclatura
+
+| Artefato | Padrão | Exemplo |
+|----------|--------|---------|
+| Arquivos TS | kebab-case | `user-service.ts` |
+| Arquivos React | kebab-case | `payment-vinculo-edit-modal.tsx` |
+| Export componente | PascalCase | `PaymentVinculoEditModal` |
+| Páginas | `*Page.tsx` | `VinculosPage.tsx` |
+| Classes back | PascalCase + sufixo | `UserService`, `UserPrismaRepository` |
+| Rotas API | inglês, kebab-case | `/api/users/me` |
+| Rotas UI | português | `/conciliacao`, `/importar` |
+| UI / mensagens | português BR | — |
+
+## Imports
+
+- **Back-end:** extensão `.js` nos imports relativos (ESM `NodeNext`)
+- **Front-end:** alias `@/` (evitar `../../` longos)
+
+## Estilo
+
+- Seguir o arquivo em edição (semicolons, aspas) — não reformatar arquivo inteiro
+- Mudanças mínimas e focadas; sem refatoração não solicitada
+
+## Git
+
+- Branches: `feature/`, `bugfix/`, `refactor/` → PR para `dev`
+- Nunca commitar direto em `main` ou `dev`
+- Invocar `/git-branch-workflow` antes de features grandes
+- Invocar `/senior-code-review-before-commit` antes de commit
+
+## Não versionar
+
+- `.env`, `uploads/`, `local-planning/`, `back-end/src/generated/prisma`
+- Dados de upload em `back-end/uploads/`
+
+## Formatação compartilhada (front)
+
+- Valores BRL e datas PT: usar `lib/format.ts` (criar se não existir) — não duplicar `formatBrlAmount` / `formatDatePt` em páginas

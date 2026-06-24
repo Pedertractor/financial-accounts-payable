@@ -22,11 +22,21 @@ import {
   parseFlexibleDate,
 } from '../lib/excel/spreadsheet-helpers.js';
 import { normalizeCounterpartyName } from '../lib/name-normalize.js';
+import {
+  bankImportIdentityKey,
+  internalImportIdentityKey,
+} from '../lib/import-identity-key.js';
 import { prisma } from '../lib/prisma.js';
 import { BankRecordPrismaRepository } from '../repositories/prisma/bank-record-repository.js';
 import { FileUploadPrismaRepository } from '../repositories/prisma/file-upload-repository.js';
 import { InternalRecordPrismaRepository } from '../repositories/prisma/internal-record-repository.js';
 import { ReconciliationRunPrismaRepository } from '../repositories/prisma/reconciliation-run-repository.js';
+import {
+  commitBankImportDedup,
+  commitInternalImportDedup,
+  planBankImportDedup,
+  planInternalImportDedup,
+} from './import-record-dedup.js';
 
 const PARSER_VERSION = 'excel-mvp-1';
 const MAX_SHEET_ROWS = 100_000;
@@ -157,6 +167,8 @@ export class FileImportService {
       totalRowsRead: u.totalRowsRead,
       totalRowsImported: u.totalRowsImported,
       totalRowsRejected: u.totalRowsRejected,
+      totalRowsSkipped: u.totalRowsSkipped,
+      totalRowsUpdated: u.totalRowsUpdated,
       totalRowsWithWarnings: u.totalRowsWithWarnings,
       errorMessage: u.errorMessage,
       progressPercent,
@@ -166,7 +178,39 @@ export class FileImportService {
       warningDetails: w?.samples
         ? { samples: w.samples }
         : null,
+      isReimport: this.isReimportFromWarningDetails(u.warningDetailsJson),
     };
+  }
+
+  private isReimportFromWarningDetails(
+    json: Prisma.JsonValue | null | undefined,
+  ): boolean {
+    if (!json || typeof json !== 'object' || Array.isArray(json)) return false;
+    return (json as { isReimport?: boolean }).isReimport === true;
+  }
+
+  private async detectReimport(fileUploadId: string): Promise<boolean> {
+    const upload = await this.uploadRepo.findById(fileUploadId);
+    if (!upload?.fileHash || !upload.runId) return false;
+    const prior = await this.uploadRepo.findCompletedByRunIdAndHash(
+      upload.runId,
+      upload.fileHash,
+      fileUploadId,
+    );
+    return !!prior;
+  }
+
+  private dedupSummaryJson(params: {
+    isReimport: boolean;
+    samples?: { row: number; text: string }[];
+  }) {
+    if (params.samples?.length) {
+      return { samples: params.samples, isReimport: params.isReimport };
+    }
+    if (params.isReimport) {
+      return { isReimport: true };
+    }
+    return undefined;
   }
 
   async saveUploadAndQueueProcess(params: {
@@ -511,17 +555,25 @@ export class FileImportService {
         continue;
       }
       const norm = normalizeCounterpartyName(nameRaw);
+      const dueDate = parseFlexibleDate(getCell(row, f.dueDate));
+      const nossoNumero = toOptionalString(getCell(row, f.nossoNumero));
       toCreate.push({
         runId,
         fileUploadId,
         rowNumber: excelRow,
-        dueDate: parseFlexibleDate(getCell(row, f.dueDate)),
+        dueDate,
         beneficiaryNameRaw: nameRaw,
         beneficiaryNameNorm: norm,
         beneficiaryNameCanon: null,
         payerNameRaw: toOptionalString(getCell(row, f.payerNameRaw)),
-        nossoNumero: toOptionalString(getCell(row, f.nossoNumero)),
+        nossoNumero,
         amount,
+        importIdentityKey: bankImportIdentityKey({
+          nossoNumero,
+          beneficiaryNameNorm: norm,
+          amount,
+          dueDate,
+        }),
       });
       if (read % PROGRESS_EVERY === 0) {
         await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
@@ -530,6 +582,9 @@ export class FileImportService {
 
     const importMs = Date.now() - tImport;
     const hasWarn = warnings.length > 0 || rejected > 0;
+    const isReimport = await this.detectReimport(fileUploadId);
+    const dedupPlan = await planBankImportDedup(this.bankRepo, runId, toCreate);
+
     if (hasWarn) {
       if (toCreate.length === 0) {
         await this.fail(
@@ -546,10 +601,15 @@ export class FileImportService {
           importDurationMs: importMs,
           parseDurationMs,
           totalRowsRead: read,
-          totalRowsImported: toCreate.length,
+          totalRowsImported: dedupPlan.inserted,
           totalRowsRejected: rejected,
+          totalRowsSkipped: dedupPlan.skipped,
+          totalRowsUpdated: dedupPlan.updated,
           totalRowsWithWarnings: warnings.length,
-          warningDetailsJson: { samples: warnings },
+          warningDetailsJson: this.dedupSummaryJson({
+            isReimport,
+            samples: warnings,
+          }),
           totalDurationMs: Date.now() - t0,
           finishedAt: now,
         });
@@ -557,26 +617,31 @@ export class FileImportService {
           runId,
           fileUploadId,
           partialMode,
-          linhasParaGravarDepoisDaConfirmacao: toCreate.length,
+          novas: dedupPlan.inserted,
+          atualizadas: dedupPlan.updated,
+          ignoradas: dedupPlan.skipped,
           rejeitadas: rejected,
           avisoAmostras: warnings.length,
+          isReimport,
         });
         return;
       }
-      await this.bankRepo.deleteManyByFileUploadId(fileUploadId);
-      if (toCreate.length) {
-        await this.bankRepo.createManyChunked(toCreate);
-      }
+      await commitBankImportDedup(this.bankRepo, fileUploadId, dedupPlan);
       const nowC = new Date();
       await this.uploadRepo.updateById(fileUploadId, {
         status: UploadStatus.PARTIAL_SUCCESS,
         importDurationMs: importMs,
         parseDurationMs,
         totalRowsRead: read,
-        totalRowsImported: toCreate.length,
+        totalRowsImported: dedupPlan.inserted,
         totalRowsRejected: rejected,
+        totalRowsSkipped: dedupPlan.skipped,
+        totalRowsUpdated: dedupPlan.updated,
         totalRowsWithWarnings: warnings.length,
-        warningDetailsJson: { samples: warnings },
+        warningDetailsJson: this.dedupSummaryJson({
+          isReimport,
+          samples: warnings,
+        }),
         totalDurationMs: Date.now() - t0,
         importedAt: nowC,
         finishedAt: nowC,
@@ -585,26 +650,28 @@ export class FileImportService {
         runId,
         fileUploadId,
         partialMode,
-        linhasImportadas: toCreate.length,
+        novas: dedupPlan.inserted,
+        atualizadas: dedupPlan.updated,
+        ignoradas: dedupPlan.skipped,
         rejeitadas: rejected,
+        isReimport,
       });
       return;
     }
 
-    await this.bankRepo.deleteManyByFileUploadId(fileUploadId);
-    if (toCreate.length) {
-      await this.bankRepo.createManyChunked(toCreate);
-    }
+    await commitBankImportDedup(this.bankRepo, fileUploadId, dedupPlan);
     const nowF = new Date();
     await this.uploadRepo.updateById(fileUploadId, {
       status: UploadStatus.COMPLETED,
       importDurationMs: importMs,
       parseDurationMs,
       totalRowsRead: read,
-      totalRowsImported: toCreate.length,
+      totalRowsImported: dedupPlan.inserted,
       totalRowsRejected: 0,
+      totalRowsSkipped: dedupPlan.skipped,
+      totalRowsUpdated: dedupPlan.updated,
       totalRowsWithWarnings: 0,
-      warningDetailsJson: undefined,
+      warningDetailsJson: this.dedupSummaryJson({ isReimport }),
       totalDurationMs: Date.now() - t0,
       importedAt: nowF,
       finishedAt: nowF,
@@ -613,7 +680,10 @@ export class FileImportService {
       runId,
       fileUploadId,
       partialMode,
-      linhasImportadas: toCreate.length,
+      novas: dedupPlan.inserted,
+      atualizadas: dedupPlan.updated,
+      ignoradas: dedupPlan.skipped,
+      isReimport,
     });
   }
 
@@ -717,24 +787,34 @@ export class FileImportService {
       }
       const suplCode = toOptionalInt(getCell(row, col.supplierCode));
       const ap = parseBrAmount(getCell(row, col.amountPaid));
+      const dueDate = parseFlexibleDate(getCell(row, col.dueDate));
+      const invoiceNumber = toOptionalString(getCell(row, col.invoiceNumber));
+      const supplierNameNorm = normalizeCounterpartyName(nameRaw);
       toCreate.push({
         runId,
         fileUploadId,
         rowNumber: excelRow,
-        dueDate: parseFlexibleDate(getCell(row, col.dueDate)),
+        dueDate,
         issueDate: parseFlexibleDate(getCell(row, col.issueDate)),
         supplierCode: suplCode,
         supplierNameRaw: nameRaw,
-        supplierNameNorm: normalizeCounterpartyName(nameRaw),
+        supplierNameNorm,
         supplierNameCanon: null,
         walletCode: toOptionalString(getCell(row, col.walletCode)),
         branchCode: toOptionalString(getCell(row, col.branchCode)),
-        invoiceNumber: toOptionalString(getCell(row, col.invoiceNumber)),
+        invoiceNumber,
         installment: toOptionalString(getCell(row, col.installment)),
         amount,
         amountPaid: ap,
         dda: toOptionalString(getCell(row, col.dda)),
         notes: toOptionalString(getCell(row, col.notes)),
+        importIdentityKey: internalImportIdentityKey({
+          supplierCode: suplCode,
+          invoiceNumber,
+          supplierNameNorm,
+          amount,
+          dueDate,
+        }),
       });
       if (read % PROGRESS_EVERY === 0) {
         await this.uploadRepo.updateById(fileUploadId, { totalRowsRead: read });
@@ -743,6 +823,13 @@ export class FileImportService {
 
     const importMs = Date.now() - tImport;
     const hasWarn = warnings.length > 0 || rejected > 0;
+    const isReimport = await this.detectReimport(fileUploadId);
+    const dedupPlan = await planInternalImportDedup(
+      this.internalRepo,
+      runId,
+      toCreate,
+    );
+
     if (hasWarn) {
       if (toCreate.length === 0) {
         await this.fail(
@@ -759,10 +846,15 @@ export class FileImportService {
           importDurationMs: importMs,
           parseDurationMs,
           totalRowsRead: read,
-          totalRowsImported: toCreate.length,
+          totalRowsImported: dedupPlan.inserted,
           totalRowsRejected: rejected,
+          totalRowsSkipped: dedupPlan.skipped,
+          totalRowsUpdated: dedupPlan.updated,
           totalRowsWithWarnings: warnings.length,
-          warningDetailsJson: { samples: warnings },
+          warningDetailsJson: this.dedupSummaryJson({
+            isReimport,
+            samples: warnings,
+          }),
           totalDurationMs: Date.now() - t0,
           finishedAt: now,
         });
@@ -772,27 +864,32 @@ export class FileImportService {
             runId,
             fileUploadId,
             partialMode,
-            linhasParaGravarDepoisDaConfirmacao: toCreate.length,
+            novas: dedupPlan.inserted,
+            atualizadas: dedupPlan.updated,
+            ignoradas: dedupPlan.skipped,
             rejeitadas: rejected,
             avisoAmostras: warnings.length,
+            isReimport,
           },
         );
         return;
       }
-      await this.internalRepo.deleteManyByFileUploadId(fileUploadId);
-      if (toCreate.length) {
-        await this.internalRepo.createManyChunked(toCreate);
-      }
+      await commitInternalImportDedup(this.internalRepo, fileUploadId, dedupPlan);
       const nowC = new Date();
       await this.uploadRepo.updateById(fileUploadId, {
         status: UploadStatus.PARTIAL_SUCCESS,
         importDurationMs: importMs,
         parseDurationMs,
         totalRowsRead: read,
-        totalRowsImported: toCreate.length,
+        totalRowsImported: dedupPlan.inserted,
         totalRowsRejected: rejected,
+        totalRowsSkipped: dedupPlan.skipped,
+        totalRowsUpdated: dedupPlan.updated,
         totalRowsWithWarnings: warnings.length,
-        warningDetailsJson: { samples: warnings },
+        warningDetailsJson: this.dedupSummaryJson({
+          isReimport,
+          samples: warnings,
+        }),
         totalDurationMs: Date.now() - t0,
         importedAt: nowC,
         finishedAt: nowC,
@@ -801,26 +898,28 @@ export class FileImportService {
         runId,
         fileUploadId,
         partialMode,
-        linhasImportadas: toCreate.length,
+        novas: dedupPlan.inserted,
+        atualizadas: dedupPlan.updated,
+        ignoradas: dedupPlan.skipped,
         rejeitadas: rejected,
+        isReimport,
       });
       return;
     }
 
-    await this.internalRepo.deleteManyByFileUploadId(fileUploadId);
-    if (toCreate.length) {
-      await this.internalRepo.createManyChunked(toCreate);
-    }
+    await commitInternalImportDedup(this.internalRepo, fileUploadId, dedupPlan);
     const nowF = new Date();
     await this.uploadRepo.updateById(fileUploadId, {
       status: UploadStatus.COMPLETED,
       importDurationMs: importMs,
       parseDurationMs,
       totalRowsRead: read,
-      totalRowsImported: toCreate.length,
+      totalRowsImported: dedupPlan.inserted,
       totalRowsRejected: 0,
+      totalRowsSkipped: dedupPlan.skipped,
+      totalRowsUpdated: dedupPlan.updated,
       totalRowsWithWarnings: 0,
-      warningDetailsJson: undefined,
+      warningDetailsJson: this.dedupSummaryJson({ isReimport }),
       totalDurationMs: Date.now() - t0,
       importedAt: nowF,
       finishedAt: nowF,
@@ -829,7 +928,10 @@ export class FileImportService {
       runId,
       fileUploadId,
       partialMode,
-      linhasImportadas: toCreate.length,
+      novas: dedupPlan.inserted,
+      atualizadas: dedupPlan.updated,
+      ignoradas: dedupPlan.skipped,
+      isReimport,
     });
   }
 

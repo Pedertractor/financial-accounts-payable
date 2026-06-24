@@ -193,12 +193,15 @@ export type FileUploadStatus = {
   totalRowsRead: number | null;
   totalRowsImported: number | null;
   totalRowsRejected: number | null;
+  totalRowsSkipped: number | null;
+  totalRowsUpdated: number | null;
   totalRowsWithWarnings: number | null;
   errorMessage: string | null;
   progressPercent: number;
   parsingStartedAt: string | null;
   finishedAt: string | null;
   needsUserConfirmation?: boolean;
+  isReimport?: boolean;
   warningDetails?: { samples: { row: number; text: string }[] } | null;
 };
 

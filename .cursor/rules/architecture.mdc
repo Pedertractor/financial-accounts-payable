@@ -1,0 +1,51 @@
+---
+description: Onde colocar código novo (camadas back-end e front-end)
+globs: back-end/**/*.ts,front-end/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Arquitetura
+
+## Back-end
+
+Fluxo obrigatório para código **novo**:
+
+```
+routes → controller (HTTP + Zod) → service (regra de negócio) → repository → prisma
+```
+
+| Camada | Responsabilidade |
+|--------|------------------|
+| `http/routes/` | Registrar rotas, `preHandler`, prefixos |
+| `http/controllers/` | Parse body/query/params, status HTTP, chamar service |
+| `services/` | Regra de negócio, `HttpError`, orquestração |
+| `repositories/prisma/` | Queries Prisma; aceitar `TransactionClient` em `$transaction` |
+
+**Proibido em código novo:** `prisma` direto no controller.
+
+**Referência boa:** `user-routes` → `user-controller` → `user-service` → `user-repository`.
+
+**Ao estender código legado** (ex.: `reconciliation-suggestions-controller`, `pix-vinculo-controller`): extrair lógica nova para service/repository; não aumentar o controller.
+
+**Limite:** arquivo > ~400 linhas → extrair service, helper em `lib/`, ou modal/componente.
+
+## Front-end
+
+Fluxo obrigatório para código **novo**:
+
+```
+pages/ → components/ ou hooks → lib/api.ts → backend
+```
+
+| Pasta | Responsabilidade |
+|-------|------------------|
+| `pages/` | Tela, layout, composição; queries podem ficar aqui ou em hook |
+| `components/` | Modais, blocos reutilizáveis, feature UI |
+| `components/ui/` | Primitivos shadcn — não colocar lógica de negócio |
+| `lib/` | API (`api.ts`), schemas Zod compartilhados, helpers (`format.ts`) |
+
+**Proibido:** `fetch` solto fora de `lib/api.ts` (exceto upload com progresso já padronizado em `api.ts`).
+
+**Formulários:** sempre React Hook Form + Zod; schema reutilizável em `lib/` (ex.: `payment-vinculo-form.ts`).
+
+**Limite:** página > ~400 linhas → extrair modais, hooks (`hooks/use-*.ts`) ou subcomponentes.

@@ -50,4 +50,26 @@ export class FileUploadPrismaRepository {
       take: params.limit,
     });
   }
+
+  /** Outro upload concluído no mesmo run com o mesmo hash (reimportação). */
+  async findCompletedByRunIdAndHash(
+    runId: string,
+    fileHash: string,
+    excludeId: string,
+  ) {
+    return this.prisma.fileUpload.findFirst({
+      where: {
+        runId,
+        fileHash,
+        id: { not: excludeId },
+        status: {
+          in: [
+            UploadStatus.COMPLETED,
+            UploadStatus.PARTIAL_SUCCESS,
+          ],
+        },
+      },
+      select: { id: true, originalFileName: true },
+    });
+  }
 }

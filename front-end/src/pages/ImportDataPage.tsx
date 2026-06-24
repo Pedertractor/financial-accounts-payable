@@ -81,6 +81,9 @@ type TrackState = {
   warningSamples: { row: number; text: string }[]
   importPreviewCount: number | null
   rejectedCount: number | null
+  skippedCount: number | null
+  updatedCount: number | null
+  isReimport: boolean
 }
 
 const initial: TrackState = {
@@ -93,6 +96,9 @@ const initial: TrackState = {
   warningSamples: [],
   importPreviewCount: null,
   rejectedCount: null,
+  skippedCount: null,
+  updatedCount: null,
+  isReimport: false,
 }
 
 const recentUploadsKey = ['reconciliation', 'uploads', 'recent'] as const
@@ -113,6 +119,23 @@ function statusLine(u: FileUploadStatus): string {
 }
 
 function rowCountLabel(u: FileUploadStatus): string {
+  const parts: string[] = []
+  if (u.totalRowsImported != null && u.totalRowsImported > 0) {
+    parts.push(
+      `${u.totalRowsImported.toLocaleString('pt-BR')} ${u.totalRowsImported === 1 ? 'nova' : 'novas'}`,
+    )
+  }
+  if (u.totalRowsUpdated != null && u.totalRowsUpdated > 0) {
+    parts.push(
+      `${u.totalRowsUpdated.toLocaleString('pt-BR')} ${u.totalRowsUpdated === 1 ? 'atualizada' : 'atualizadas'}`,
+    )
+  }
+  if (u.totalRowsSkipped != null && u.totalRowsSkipped > 0) {
+    parts.push(
+      `${u.totalRowsSkipped.toLocaleString('pt-BR')} ${u.totalRowsSkipped === 1 ? 'ignorada (já existia)' : 'ignoradas (já existiam)'}`,
+    )
+  }
+  if (parts.length) return parts.join(' · ')
   if (u.totalRowsImported != null) {
     return `${u.totalRowsImported.toLocaleString('pt-BR')} ${u.totalRowsImported === 1 ? 'linha' : 'linhas'}`
   }
@@ -120,6 +143,28 @@ function rowCountLabel(u: FileUploadStatus): string {
     return `${u.totalRowsRead.toLocaleString('pt-BR')} ${u.totalRowsRead === 1 ? 'linha' : 'linhas'} (lidas)`
   }
   return '—'
+}
+
+function dedupSummaryLine(t: TrackState): string | null {
+  const parts: string[] = []
+  if (t.importPreviewCount != null && t.importPreviewCount > 0) {
+    parts.push(
+      `${t.importPreviewCount.toLocaleString('pt-BR')} ${t.importPreviewCount === 1 ? 'nova' : 'novas'}`,
+    )
+  }
+  if (t.updatedCount != null && t.updatedCount > 0) {
+    parts.push(
+      `${t.updatedCount.toLocaleString('pt-BR')} ${t.updatedCount === 1 ? 'atualizada' : 'atualizadas'}`,
+    )
+  }
+  if (t.skippedCount != null && t.skippedCount > 0) {
+    parts.push(
+      `${t.skippedCount.toLocaleString('pt-BR')} ${t.skippedCount === 1 ? 'ignorada (já existia)' : 'ignoradas (já existiam)'}`,
+    )
+  }
+  if (!parts.length) return null
+  const base = parts.join(' · ')
+  return t.isReimport ? `${base} — reimportação detectada` : base
 }
 
 const RECENT_IMPORTS_PAGE_SIZE = 5
@@ -282,6 +327,9 @@ function RowList({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{t.fileName}</p>
           {t.error ? <p className="text-destructive mt-1 text-xs">{t.error}</p> : null}
+          {(t.status === 'done' || t.status === 'partial') && dedupSummaryLine(t) ? (
+            <p className="text-muted-foreground mt-1 text-xs">{dedupSummaryLine(t)}</p>
+          ) : null}
           {t.status === 'awaitingConfirm' ? (
             <p className="text-muted-foreground mt-1.5 text-xs">
               A planilha tem linhas com problema. Nada foi gravado no banco ainda. Revise o que
@@ -324,18 +372,19 @@ function RowList({
       {t.status === 'awaitingConfirm' && t.fileUploadId ? (
         <div className="bg-muted/30 space-y-2 rounded-md border p-3">
           <p className="text-sm">
-            {t.importPreviewCount != null
-              ? `${t.importPreviewCount.toLocaleString('pt-BR')} ${t.importPreviewCount === 1 ? 'linha' : 'linhas'} a importar`
-              : 'Linhas a importar'}
+            {dedupSummaryLine(t) ??
+              (t.importPreviewCount != null
+                ? `${t.importPreviewCount.toLocaleString('pt-BR')} ${t.importPreviewCount === 1 ? 'linha' : 'linhas'} a importar`
+                : 'Linhas a importar')}
             {t.rejectedCount != null
-              ? ` · ${t.rejectedCount.toLocaleString('pt-BR')} ${t.rejectedCount === 1 ? 'ignorada' : 'ignoradas'}`
+              ? ` · ${t.rejectedCount.toLocaleString('pt-BR')} ${t.rejectedCount === 1 ? 'rejeitada' : 'rejeitadas'} (inválidas)`
               : null}
             {t.warningSamples.length < (t.rejectedCount ?? 0) ? ' (amostra abaixo; até 30 linhas)' : null}
           </p>
           {t.warningSamples.length > 0 ? (
             <Collapsible>
               <CollapsibleTrigger className="text-foreground/90 hover:text-foreground flex w-full items-center justify-between text-left text-sm font-medium">
-                <span>Linhas ignoradas (amostra)</span>
+                <span>Linhas rejeitadas (amostra)</span>
                 <ChevronDown className="text-muted-foreground size-4 shrink-0" />
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-2">
@@ -501,9 +550,12 @@ export function ImportDataPage() {
         processPercent: 100,
         status: st,
         error: u.errorMessage,
-        warningSamples: [],
-        importPreviewCount: null,
-        rejectedCount: null,
+        warningSamples: u.warningDetails?.samples ?? [],
+        importPreviewCount: u.totalRowsImported,
+        rejectedCount: u.totalRowsRejected,
+        skippedCount: u.totalRowsSkipped,
+        updatedCount: u.totalRowsUpdated,
+        isReimport: u.isReimport ?? false,
       }))
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
     },
@@ -619,6 +671,9 @@ export function ImportDataPage() {
         warningSamples: [],
         importPreviewCount: null,
         rejectedCount: null,
+        skippedCount: null,
+        updatedCount: null,
+        isReimport: false,
       }))
     },
     onSuccess: (u, { file, kind }) => {
@@ -635,6 +690,9 @@ export function ImportDataPage() {
             warningSamples: u.warningDetails?.samples ?? [],
             importPreviewCount: u.totalRowsImported,
             rejectedCount: u.totalRowsRejected,
+            skippedCount: u.totalRowsSkipped,
+            updatedCount: u.totalRowsUpdated,
+            isReimport: u.isReimport ?? false,
           }
         }
         const st: TrackState['status'] =
@@ -650,9 +708,12 @@ export function ImportDataPage() {
           processPercent: u.progressPercent,
           status: st,
           error: u.errorMessage,
-          warningSamples: [],
-          importPreviewCount: null,
-          rejectedCount: null,
+          warningSamples: u.warningDetails?.samples ?? [],
+          importPreviewCount: u.totalRowsImported,
+          rejectedCount: u.totalRowsRejected,
+          skippedCount: u.totalRowsSkipped,
+          updatedCount: u.totalRowsUpdated,
+          isReimport: u.isReimport ?? false,
         }
       })
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })

@@ -198,6 +198,8 @@ model FileUpload {
   totalRowsRead         Int?
   totalRowsImported     Int?
   totalRowsRejected     Int?
+  totalRowsSkipped      Int?
+  totalRowsUpdated      Int?
   totalRowsWithWarnings Int?
 
   headerRowIndex      Int?
@@ -240,6 +242,7 @@ model BankRecord {
   payerNameRaw         String?
   nossoNumero          String?
   amount               Decimal   @db.Decimal(14, 2)
+  importIdentityKey    String?
 
   run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   fileUpload FileUpload?       @relation(fields: [fileUploadId], references: [id], onDelete: SetNull)
@@ -250,6 +253,7 @@ model BankRecord {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([runId, importIdentityKey])
   @@index([runId, dueDate])
   @@index([amount])
   @@index([beneficiaryNameNorm])
@@ -277,6 +281,7 @@ model InternalRecord {
   amountPaid        Decimal?  @db.Decimal(14, 2)
   dda               String?
   notes             String?
+  importIdentityKey String?
 
   run        ReconciliationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   fileUpload FileUpload?       @relation(fields: [fileUploadId], references: [id], onDelete: SetNull)
@@ -287,6 +292,7 @@ model InternalRecord {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([runId, importIdentityKey])
   @@index([runId, dueDate])
   @@index([amount])
   @@index([supplierNameNorm])

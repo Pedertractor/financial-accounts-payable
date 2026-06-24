@@ -26,5 +26,10 @@ dist-ssr
 
 back-end/src/generated/prisma
 
-.cursor
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 uploads
+
+# Planejamento local (pendências / notas de implementação)
+local-planning/
