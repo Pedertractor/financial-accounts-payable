@@ -1,6 +1,6 @@
 ---
-description: Nomenclatura, estilo, git e arquivos ignorados
-globs: back-end/**/*,front-end/**/*
+description: 
+globs: back-end/**/*, front-end/**/*
 alwaysApply: false
 ---
 
@@ -9,7 +9,7 @@ alwaysApply: false
 ## Nomenclatura
 
 | Artefato | Padrão | Exemplo |
-|----------|--------|---------|
+|----|-----|---|
 | Arquivos TS | kebab-case | `user-service.ts` |
 | Arquivos React | kebab-case | `payment-vinculo-edit-modal.tsx` |
 | Export componente | PascalCase | `PaymentVinculoEditModal` |
@@ -43,4 +43,4 @@ alwaysApply: false
 
 ## Formatação compartilhada (front)
 
-- Valores BRL e datas PT: usar `lib/format.ts` (criar se não existir) — não duplicar `formatBrlAmount` / `formatDatePt` em páginas
+- Valores BRL e datas sempre PT-BR dia antes do mês: usar `lib/format.ts` (criar se não existir) — não duplicar `formatBrlAmount` / `formatDatePt` em páginas

@@ -14,7 +14,7 @@ Use when invoked with `/feature-implementation` or when explicitly asked to impl
 
 ## Before coding
 
-1. If not already on a task branch, invoke or follow `.agents/skills/git-branch-workflow/SKILL.md`.
+1. If not already on a task branch, invoke or follow `/git-branch-workflow`.
 2. Read `.cursor/rules/architecture.mdc`, `api-and-errors.mdc`, and `conventions.mdc`.
 3. Clarify escopo mínimo: endpoint(s), tela(s), permissões (role).
 
