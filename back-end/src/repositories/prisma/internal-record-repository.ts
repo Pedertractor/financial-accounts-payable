@@ -89,6 +89,31 @@ export class InternalRecordPrismaRepository {
     });
   }
 
+  async countByRunId(runId: string) {
+    return this.prisma.internalRecord.count({ where: { runId } });
+  }
+
+  /** Lançamentos do interno (Epron) de uma conciliação, paginados (para visualização). */
+  async listByRunId(runId: string, opts: { skip: number; take: number }) {
+    return this.prisma.internalRecord.findMany({
+      where: { runId },
+      orderBy: [{ dueDate: 'asc' }, { rowNumber: 'asc' }],
+      skip: opts.skip,
+      take: opts.take,
+      select: {
+        id: true,
+        rowNumber: true,
+        dueDate: true,
+        issueDate: true,
+        supplierNameRaw: true,
+        invoiceNumber: true,
+        installment: true,
+        amount: true,
+        amountPaid: true,
+      },
+    });
+  }
+
   async findIdentityRowsByRunId(
     runId: string,
   ): Promise<InternalRecordIdentityRow[]> {

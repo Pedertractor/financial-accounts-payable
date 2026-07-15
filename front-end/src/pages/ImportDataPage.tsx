@@ -45,14 +45,17 @@ import {
   type FileUploadStatus,
   cancelStagedFileUpload,
   confirmStagedFileUpload,
+  createReconciliationRun,
   deleteImportRecords,
   finalizeReconciliationRun,
   getReconciliationRun,
   listRecentFileUploads,
   pollFileUpload,
+  reconciliationRunClosePreviewQk,
   reconciliationRunDetailQk,
   uploadReconciliationFile,
 } from '@/lib/api'
+import { Input } from '@/components/ui/input'
 import {
   importReconciliationRunQueryKey,
   resolveImportReconciliationRunId,
@@ -61,6 +64,7 @@ import {
   clearStoredReconciliationRunId,
   getStoredConciliationUnitForImport,
   setStoredConciliationUnit,
+  setStoredReconciliationRunId,
   type ConciliationUnit,
 } from '@/lib/reconcile-storage'
 import { cn } from '@/lib/utils'
@@ -104,6 +108,15 @@ const initial: TrackState = {
 }
 
 const recentUploadsKey = ['reconciliation', 'uploads', 'recent'] as const
+
+function defaultRunTitle(): string {
+  const label = new Date().toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+  return `Conciliação ${label}`
+}
 
 function sourceLabel(t: string): string {
   if (t === 'BANK') return 'Banco'
@@ -467,6 +480,7 @@ export function ImportDataPage() {
   const [internal, setInternal] = useState<TrackState>(initial)
   const [vinculoSuccess, setVinculoSuccess] = useState(false)
   const [vinculoSuccessMessage, setVinculoSuccessMessage] = useState<string | null>(null)
+  const [newRunTitle, setNewRunTitle] = useState(defaultRunTitle)
 
   const { data: runId, isLoading: runLoading } = useQuery({
     queryKey: importUnit != null ? importReconciliationRunQueryKey(importUnit) : ['reconciliation-run', 'import-page', 'none'],
@@ -503,6 +517,22 @@ export function ImportDataPage() {
     clearStoredReconciliationRunId()
     void queryClient.invalidateQueries({ queryKey: importReconciliationRunQueryKey(u) })
   }
+
+  const createRunMutation = useMutation({
+    mutationFn: () =>
+      createReconciliationRun({
+        unit: importUnit!,
+        title: newRunTitle.trim() || defaultRunTitle(),
+      }),
+    onSuccess: ({ run }) => {
+      setStoredReconciliationRunId(run.id)
+      setNewRunTitle(defaultRunTitle())
+      if (importUnit) {
+        queryClient.setQueryData(importReconciliationRunQueryKey(importUnit), run.id)
+      }
+      void queryClient.invalidateQueries({ queryKey: reconciliationRunDetailQk(run.id) })
+    },
+  })
 
   const { data: recentData, isLoading: recentLoading } = useQuery({
     queryKey: recentUploadsKey,
@@ -555,6 +585,11 @@ export function ImportDataPage() {
         isReimport: u.isReimport ?? false,
       }))
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
+      if (runId) {
+        void queryClient.invalidateQueries({
+          queryKey: reconciliationRunClosePreviewQk(runId),
+        })
+      }
     },
     onError: (e, p) => {
       const set = p.kind === 'bank' ? setBank : setInternal
@@ -572,6 +607,11 @@ export function ImportDataPage() {
       const set = p.kind === 'bank' ? setBank : setInternal
       set(initial)
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
+      if (runId) {
+        void queryClient.invalidateQueries({
+          queryKey: reconciliationRunClosePreviewQk(runId),
+        })
+      }
     },
   })
 
@@ -582,6 +622,11 @@ export function ImportDataPage() {
       const set = p.kind === 'bank' ? setBank : setInternal
       set(initial)
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
+      if (runId) {
+        void queryClient.invalidateQueries({
+          queryKey: reconciliationRunClosePreviewQk(runId),
+        })
+      }
     },
     onError: (e, p) => {
       const set = p.kind === 'bank' ? setBank : setInternal
@@ -714,6 +759,11 @@ export function ImportDataPage() {
         }
       })
       void queryClient.invalidateQueries({ queryKey: recentUploadsKey })
+      if (runId) {
+        void queryClient.invalidateQueries({
+          queryKey: reconciliationRunClosePreviewQk(runId),
+        })
+      }
     },
   })
 
@@ -745,8 +795,55 @@ export function ImportDataPage() {
             value={null}
             onSelect={handleImportUnitChange}
           />
-        ) : runLoading || !runId ? (
+        ) : runLoading ? (
           <p className="text-muted-foreground text-sm">Preparando execução de conciliação…</p>
+        ) : !runId ? (
+          <div className="space-y-6">
+            <CompanyUnitPicker
+              label="Empresa"
+              value={importUnit}
+              onSelect={handleImportUnitChange}
+            />
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Criar conciliação</CardTitle>
+                <CardDescription>
+                  Nenhuma conciliação para{' '}
+                  {importUnit === 'PEDERTRACTOR' ? 'Pedertractor' : 'Tractor'} ainda. Crie uma para
+                  começar a importar as planilhas deste período.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="max-w-md space-y-2">
+                  <Label htmlFor="first-run-title">Título</Label>
+                  <Input
+                    id="first-run-title"
+                    value={newRunTitle}
+                    onChange={(e) => setNewRunTitle(e.target.value)}
+                    maxLength={200}
+                  />
+                </div>
+                {createRunMutation.isError ? (
+                  <p className="text-destructive text-sm">
+                    {createRunMutation.error instanceof Error
+                      ? createRunMutation.error.message
+                      : 'Não foi possível criar a conciliação.'}
+                  </p>
+                ) : null}
+                <Button
+                  type="button"
+                  disabled={createRunMutation.isPending}
+                  onClick={() => createRunMutation.mutate()}
+                >
+                  {createRunMutation.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    'Criar conciliação'
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
         ) : (
           <div className="space-y-6">
             <CompanyUnitPicker

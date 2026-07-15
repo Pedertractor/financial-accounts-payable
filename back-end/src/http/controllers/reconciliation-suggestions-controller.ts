@@ -75,6 +75,19 @@ const confirmParamsSchema = z.object({
   suggestionId: z.string().min(1),
 });
 
+const MANUAL_LINK_NOTES_MAX = 2000;
+
+/** Observações opcionais do vínculo manual: normaliza vazio → null e limita tamanho. */
+const manualLinkNotesSchema = z
+  .string()
+  .trim()
+  .max(
+    MANUAL_LINK_NOTES_MAX,
+    `Observações: máximo de ${MANUAL_LINK_NOTES_MAX} caracteres.`,
+  )
+  .transform((v) => (v.length === 0 ? null : v))
+  .nullable();
+
 const bankOnlyInternalSumsQuerySchema = z.object({
   /** Filtro de vencimento (SP) da lista para vínculo manual. Padrão: hoje. */
   manualPoolDayYmd: z
@@ -786,6 +799,7 @@ export async function linkManualBoletoVinculo(
   let fileBuffer: Buffer | null = null;
   let mimetype = '';
   let originalFileName: string | null = null;
+  let notesRaw: string | null = null;
   for await (const part of request.parts()) {
     if (part.type === 'file') {
       if (part.fieldname === 'evidence' || part.fieldname === 'file') {
@@ -797,8 +811,15 @@ export async function linkManualBoletoVinculo(
             : null;
         fileBuffer = b;
       }
+    } else if (
+      (part.fieldname === 'notes' || part.fieldname === 'observations') &&
+      typeof part.value === 'string'
+    ) {
+      notesRaw = part.value;
     }
   }
+
+  const notes = manualLinkNotesSchema.parse(notesRaw);
 
   const s = await prisma.matchSuggestion.findFirst({
     where: { id: suggestionId, runId },
@@ -846,6 +867,7 @@ export async function linkManualBoletoVinculo(
       reason: SuggestionReason.BOLETO_VINCULO_OK,
       paymentVinculoKind: PaymentVinculoKind.BOLETO,
       manualBoletoEvidenceRelPath: relPath,
+      manualLinkNotes: notes,
       reviewedById: userId,
       confirmedAt: now,
     },

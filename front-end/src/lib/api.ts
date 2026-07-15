@@ -313,6 +313,108 @@ export async function reopenReconciliationRun(
   return apiJson(`/reconciliation/runs/${runId}/reopen`, { method: 'POST' })
 }
 
+/** Exclui uma conciliação vazia (sem lançamentos). Falha (400) se tiver dados — use encerrar. */
+export async function deleteReconciliationRun(runId: string): Promise<void> {
+  const res = await fetch(`${base}/reconciliation/runs/${runId}`, {
+    method: 'DELETE',
+    headers: { ...authHeader() },
+  })
+  if (res.status === 204) {
+    return
+  }
+  const data = (await res.json().catch(() => ({}))) as { error?: string }
+  const msg = typeof data.error === 'string' ? data.error : `HTTP ${res.status}`
+  throw new Error(msg)
+}
+
+export type ReconciliationRunListItem = {
+  id: string
+  title: string | null
+  status: string
+  unit: 'PEDERTRACTOR' | 'TRACTOR'
+  referenceStartDate: string | null
+  referenceEndDate: string | null
+  createdAt: string
+  counts: {
+    bank: number
+    internal: number
+    suggestions: number
+    uploads: number
+  }
+}
+
+export function reconciliationRunsListQk(
+  unit: 'PEDERTRACTOR' | 'TRACTOR',
+  status?: 'OPEN' | 'CLOSED',
+) {
+  return ['reconciliation-runs', 'list', unit, status ?? 'all'] as const
+}
+
+/** Lista todas as conciliações da empresa (histórico), com contagens. */
+export async function listReconciliationRuns(
+  params: { unit: 'PEDERTRACTOR' | 'TRACTOR'; status?: 'OPEN' | 'CLOSED' },
+  init?: RequestInit,
+): Promise<{ runs: ReconciliationRunListItem[] }> {
+  const sp = new URLSearchParams()
+  sp.set('unit', params.unit)
+  if (params.status) sp.set('status', params.status)
+  return apiJson(`/reconciliation/runs?${sp.toString()}`, init)
+}
+
+export type RunRecordType = 'bank' | 'internal'
+
+export type BankRunRecord = {
+  id: string
+  rowNumber: number | null
+  dueDate: string | null
+  beneficiaryNameRaw: string
+  payerNameRaw: string | null
+  nossoNumero: string | null
+  amount: string
+}
+
+export type InternalRunRecord = {
+  id: string
+  rowNumber: number | null
+  dueDate: string | null
+  issueDate: string | null
+  supplierNameRaw: string
+  invoiceNumber: string | null
+  installment: string | null
+  amount: string
+  amountPaid: string | null
+}
+
+export type RunRecordsResponse = {
+  type: RunRecordType
+  page: number
+  pageSize: number
+  total: number
+  records: BankRunRecord[] | InternalRunRecord[]
+}
+
+export function runRecordsQk(
+  runId: string,
+  type: RunRecordType,
+  page: number,
+  pageSize: number,
+) {
+  return ['reconciliation-run', 'records', runId, type, page, pageSize] as const
+}
+
+/** Lançamentos importados (banco ou interno) de uma conciliação, paginados. */
+export async function listRunRecords(
+  runId: string,
+  params: { type: RunRecordType; page: number; pageSize: number },
+  init?: RequestInit,
+): Promise<RunRecordsResponse> {
+  const sp = new URLSearchParams()
+  sp.set('type', params.type)
+  sp.set('page', String(params.page))
+  sp.set('pageSize', String(params.pageSize))
+  return apiJson(`/reconciliation/runs/${runId}/records?${sp.toString()}`, init)
+}
+
 /**
  * Após importar banco e/ou interno, grava no banco as sugestões de vínculo e triagem.
  * (Não dispara automaticamente após cada arquivo.)
@@ -715,6 +817,7 @@ export async function linkManualBoletoVinculo(
   runId: string,
   suggestionId: string,
   imageFile: File | null,
+  notes?: string | null,
 ): Promise<{
   suggestion: { id: string; status: string; confirmedAt: string | null }
 }> {
@@ -725,6 +828,10 @@ export async function linkManualBoletoVinculo(
   const form = new FormData()
   if (imageFile != null && imageFile.size > 0) {
     form.append('evidence', imageFile)
+  }
+  const trimmedNotes = notes?.trim()
+  if (trimmedNotes != null && trimmedNotes.length > 0) {
+    form.append('notes', trimmedNotes)
   }
   const res = await fetch(
     `${base}/reconciliation/runs/${runId}/suggestions/${suggestionId}/link-manual-boleto`,
@@ -836,6 +943,8 @@ export type PaymentInstructionResponse = {
   beneficiaryName?: string | null
   /** true = dados do título no ERP (vínculo manual “sem par banco”). */
   sourceFromErp?: boolean
+  /** Observações digitadas no vínculo manual (boleto). */
+  manualLinkNotes?: string | null
   /** Path relativo à API para buscar a imagem com autenticação. */
   evidencePath?: string | null
 }

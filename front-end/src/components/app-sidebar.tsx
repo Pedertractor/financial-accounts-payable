@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Banknote, Building2, Database, FileSpreadsheet, Home, Users, Wallet } from 'lucide-react'
+import { Banknote, Building2, Database, FileSpreadsheet, Home, Layers, Users, Wallet } from 'lucide-react'
 import { NavMain } from '@/components/nav-main'
 import { NavProjects } from '@/components/nav-projects'
 import { NavUser } from '@/components/nav-user'
@@ -22,6 +22,7 @@ function buildNavItems(role?: string) {
   const base = [
     { title: 'Dashboard', url: '/', icon: Home, soon: true },
     { title: 'Importar Dados', url: '/importar', icon: FileSpreadsheet },
+    { title: 'Conciliações', url: '/conciliacoes', icon: Layers },
     { title: 'Conciliação', url: '/conciliacao', icon: Database },
     { title: 'Contas pagas', url: '/contas', icon: Banknote },
     { title: 'PIX & TED', url: '/pix-ted', icon: Wallet },

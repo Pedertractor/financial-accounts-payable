@@ -1,13 +1,101 @@
 import { RunStatus, SuggestionStatus } from '../generated/prisma/enums.js';
+import type { UnitType } from '../generated/prisma/enums.js';
 import { HttpError } from '../http/erros/index.js';
 import { prisma } from '../lib/prisma.js';
+import { BankRecordPrismaRepository } from '../repositories/prisma/bank-record-repository.js';
+import { InternalRecordPrismaRepository } from '../repositories/prisma/internal-record-repository.js';
 import { ReconciliationRunPrismaRepository } from '../repositories/prisma/reconciliation-run-repository.js';
 
 export const RUN_CLOSED_IMPORT_MESSAGE =
   'Esta conciliação foi encerrada. Inicie uma nova conciliação para importar planilhas.';
 
+const RECORDS_MAX_PAGE_SIZE = 200;
+const RECORDS_DEFAULT_PAGE_SIZE = 50;
+
+export type RunRecordType = 'bank' | 'internal';
+
 export class ReconciliationRunService {
   private readonly runRepo = new ReconciliationRunPrismaRepository(prisma);
+  private readonly bankRepo = new BankRecordPrismaRepository(prisma);
+  private readonly internalRepo = new InternalRecordPrismaRepository(prisma);
+
+  async listRuns(unit: UnitType, status?: RunStatus) {
+    const runs = await this.runRepo.listByUnit(unit, status);
+    return runs.map((r) => ({
+      id: r.id,
+      title: r.title,
+      status: r.status,
+      unit: r.unit,
+      referenceStartDate: r.referenceStartDate?.toISOString() ?? null,
+      referenceEndDate: r.referenceEndDate?.toISOString() ?? null,
+      createdAt: r.createdAt.toISOString(),
+      counts: {
+        bank: r._count.bankRecords,
+        internal: r._count.internalRecords,
+        suggestions: r._count.suggestions,
+        uploads: r._count.uploads,
+      },
+    }));
+  }
+
+  async listRunRecords(
+    runId: string,
+    type: RunRecordType,
+    page: number,
+    pageSize: number,
+  ) {
+    await this.getRunOrThrow(runId);
+    const safePageSize = Math.min(
+      Math.max(1, pageSize || RECORDS_DEFAULT_PAGE_SIZE),
+      RECORDS_MAX_PAGE_SIZE,
+    );
+    const safePage = Math.max(1, page || 1);
+    const skip = (safePage - 1) * safePageSize;
+
+    if (type === 'bank') {
+      const [total, rows] = await Promise.all([
+        this.bankRepo.countByRunId(runId),
+        this.bankRepo.listByRunId(runId, { skip, take: safePageSize }),
+      ]);
+      return {
+        type,
+        page: safePage,
+        pageSize: safePageSize,
+        total,
+        records: rows.map((r) => ({
+          id: r.id,
+          rowNumber: r.rowNumber,
+          dueDate: r.dueDate?.toISOString() ?? null,
+          beneficiaryNameRaw: r.beneficiaryNameRaw,
+          payerNameRaw: r.payerNameRaw,
+          nossoNumero: r.nossoNumero,
+          amount: r.amount.toString(),
+        })),
+      };
+    }
+
+    const [total, rows] = await Promise.all([
+      this.internalRepo.countByRunId(runId),
+      this.internalRepo.listByRunId(runId, { skip, take: safePageSize }),
+    ]);
+    return {
+      type,
+      page: safePage,
+      pageSize: safePageSize,
+      total,
+      records: rows.map((r) => ({
+        id: r.id,
+        rowNumber: r.rowNumber,
+        dueDate: r.dueDate?.toISOString() ?? null,
+        issueDate: r.issueDate?.toISOString() ?? null,
+        supplierNameRaw: r.supplierNameRaw,
+        invoiceNumber: r.invoiceNumber,
+        installment: r.installment,
+        amount: r.amount.toString(),
+        amountPaid: r.amountPaid?.toString() ?? null,
+      })),
+    };
+  }
 
   async getRunOrThrow(runId: string) {
     const run = await this.runRepo.findById(runId);
@@ -61,6 +149,29 @@ export class ReconciliationRunService {
       internalRecordCount,
       warnings,
     };
+  }
+
+  /**
+   * Exclui uma conciliação VAZIA (sem lançamentos importados). Para limpar ciclos de teste/engano.
+   * Conciliações com dados não podem ser excluídas — use `closeRun` (arquivar).
+   */
+  async deleteEmptyRun(runId: string) {
+    await this.getRunOrThrow(runId);
+    const [bank, internal] = await Promise.all([
+      this.bankRepo.countByRunId(runId),
+      this.internalRepo.countByRunId(runId),
+    ]);
+    if (bank > 0 || internal > 0) {
+      throw new HttpError(
+        'Só é possível excluir conciliações vazias (sem lançamentos importados). Use Encerrar para arquivar uma conciliação com dados.',
+        400,
+      );
+    }
+    await prisma.$transaction(async (tx) => {
+      // FileUpload.run é SetNull; removemos aqui para não deixar uploads órfãos ao excluir o run.
+      await tx.fileUpload.deleteMany({ where: { runId } });
+      await tx.reconciliationRun.delete({ where: { id: runId } });
+    });
   }
 
   async closeRun(runId: string) {

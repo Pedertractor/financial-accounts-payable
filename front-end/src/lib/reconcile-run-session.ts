@@ -1,5 +1,4 @@
 import {
-  createReconciliationRun,
   getLatestReconciliationRun,
   getReconciliationRun,
   requestInitWithTimeout,
@@ -54,12 +53,13 @@ export async function fetchVinculosReconciliationRunId(
 }
 
 /**
- * Run aberto para importação: ignora id encerrado no storage; cria novo se necessário.
+ * Run aberto para importação: ignora id encerrado no storage.
+ * Retorna `null` quando não existe nenhuma conciliação — a tela pede para criar (sem criar sozinha).
  */
 export async function resolveImportReconciliationRunId(
   unit: ConciliationUnit,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<string | null> {
   const rInit = requestInitWithTimeout(signal, 45_000);
   const existing = getStoredReconciliationRunId();
   if (existing) {
@@ -80,10 +80,5 @@ export async function resolveImportReconciliationRunId(
     setStoredReconciliationRunId(latest.id);
     return latest.id;
   }
-  const { run } = await createReconciliationRun({
-    title: 'Importação',
-    unit,
-  });
-  setStoredReconciliationRunId(run.id);
-  return run.id;
+  return null;
 }

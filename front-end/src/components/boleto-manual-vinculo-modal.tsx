@@ -8,8 +8,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
 import { linkManualBoletoVinculo } from '@/lib/api';
 import { cn } from '@/lib/utils';
+
+const NOTES_MAX = 2000;
 
 type Props = {
   open: boolean;
@@ -30,9 +33,11 @@ export function BoletoManualVinculoModal({
   onSubmittingChange,
 }: Props) {
   const fileInputId = useId();
+  const notesInputId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
+  const [notes, setNotes] = useState('');
   const [isDragging, setIsDragging] = useState(false);
 
   const allowedMime = (f: File) => {
@@ -52,7 +57,7 @@ export function BoletoManualVinculoModal({
   }
 
   const mut = useMutation({
-    mutationFn: () => linkManualBoletoVinculo(runId, suggestionId, file),
+    mutationFn: () => linkManualBoletoVinculo(runId, suggestionId, file, notes),
     onMutate: () => {
       onSubmittingChange?.(true);
     },
@@ -61,6 +66,7 @@ export function BoletoManualVinculoModal({
     },
     onSuccess: () => {
       setFile(null);
+      setNotes('');
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -78,6 +84,7 @@ export function BoletoManualVinculoModal({
       onOpenChange={(o) => {
         if (!o) {
           setFile(null);
+          setNotes('');
           if (fileInputRef.current) {
             fileInputRef.current.value = '';
           }
@@ -175,6 +182,27 @@ export function BoletoManualVinculoModal({
             ) : null}
             <p className='text-muted-foreground/90 mt-1.5 text-center text-[0.7rem]'>
               Tamanho máximo conforme o servidor.
+            </p>
+          </div>
+          <div className='mt-4'>
+            <label
+              htmlFor={notesInputId}
+              className='text-foreground mb-2 block text-sm font-medium'
+            >
+              Observações (opcional)
+            </label>
+            <Textarea
+              id={notesInputId}
+              value={notes}
+              maxLength={NOTES_MAX}
+              rows={3}
+              placeholder='Ex.: pago em duas parcelas, negociado com o fornecedor, etc.'
+              onChange={(e) => {
+                setNotes(e.target.value);
+              }}
+            />
+            <p className='text-muted-foreground/90 mt-1.5 text-right text-[0.7rem]'>
+              {notes.length}/{NOTES_MAX}
             </p>
           </div>
           {err != null && err.length > 0 ? (

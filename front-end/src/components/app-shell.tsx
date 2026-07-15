@@ -38,6 +38,7 @@ function readUser(): StoredUser {
 
 function segmentTitle(pathname: string): string {
   if (pathname === '/importar') return 'Importar Dados'
+  if (pathname === '/conciliacoes') return 'Conciliações'
   if (pathname === '/conciliacao') return 'Conciliação'
   if (pathname === '/contas') return 'Contas pagas'
   if (pathname === '/pix-ted') return 'PIX & TED'

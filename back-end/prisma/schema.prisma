@@ -330,6 +330,8 @@ model MatchSuggestion {
   paymentVinculoKind PaymentVinculoKind?
   /// Comprovante (imagem) da conferência manual de boleto, caminho relativo a `UPLOAD_DIR`.
   manualBoletoEvidenceRelPath String?
+  /// Observações digitadas pelo financeiro ao confirmar um vínculo manual (auditoria/contexto).
+  manualLinkNotes String?
   /// Financeiro marcou a conta como paga (independente de PIX/TED).
   paidAt   DateTime?
   paidById String?

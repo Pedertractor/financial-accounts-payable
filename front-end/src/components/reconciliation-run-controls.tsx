@@ -16,6 +16,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   closeReconciliationRun,
   createReconciliationRun,
   getMeUserRequest,
@@ -36,7 +41,7 @@ import {
 } from '@/lib/reconcile-storage'
 
 function defaultNewRunTitle(): string {
-  const label = format(new Date(), "MMMM 'de' yyyy", { locale: ptBR })
+  const label = format(new Date(), 'dd/MM/yyyy', { locale: ptBR })
   return `Conciliação ${label}`
 }
 
@@ -102,12 +107,18 @@ export function ReconciliationRunControls({
   const { data: previewData, isLoading: previewLoading } = useQuery({
     queryKey: reconciliationRunClosePreviewQk(runId),
     queryFn: () => getReconciliationRunClosePreview(runId),
-    enabled: closeOpen,
+    // Busca ao abrir o diálogo e também com a conciliação aberta, para saber se está vazia.
+    enabled: closeOpen || (runData?.run != null && runData.run.status !== 'CLOSED'),
   })
 
   const run = runData?.run
   const isClosed = run?.status === 'CLOSED'
   const isAdmin = meData?.user.role === 'ADMIN'
+  // Conciliação sem nada importado: não há o que encerrar.
+  const isEmptyRun =
+    previewData?.summary != null &&
+    previewData.summary.bankRecordCount === 0 &&
+    previewData.summary.internalRecordCount === 0
 
   const invalidateRunQueries = (id: string) => {
     void queryClient.invalidateQueries({ queryKey: reconciliationRunDetailQk(id) })
@@ -124,11 +135,17 @@ export function ReconciliationRunControls({
   })
 
   const newMutation = useMutation({
-    mutationFn: () =>
-      createReconciliationRun({
+    mutationFn: async () => {
+      // Na tela de importar, criar um novo ciclo encerra e arquiva o atual (se aberto),
+      // para não deixar duas conciliações abertas da mesma empresa.
+      if (context === 'import' && run?.status !== 'CLOSED') {
+        await closeReconciliationRun(runId)
+      }
+      return createReconciliationRun({
         unit,
         title: newTitle.trim() || defaultNewRunTitle(),
-      }),
+      })
+    },
     onSuccess: ({ run: created }) => {
       setStoredReconciliationRunId(created.id)
       setNewOpen(false)
@@ -173,9 +190,17 @@ export function ReconciliationRunControls({
               Conciliação encerrada — não é possível importar planilhas neste ciclo. Inicie uma
               nova conciliação para o próximo período.
             </p>
+          ) : isEmptyRun ? (
+            <p className="text-muted-foreground text-xs">
+              {context === 'import'
+                ? 'Conciliação ativa e ainda vazia. Importe as planilhas abaixo — elas ficam guardadas aqui. Você não precisa criar nada para começar.'
+                : 'Conciliação ativa e ainda vazia.'}
+            </p>
           ) : (
             <p className="text-muted-foreground text-xs">
-              Imports e reimportações deste ciclo ficam nesta conciliação até você encerrar.
+              {context === 'import'
+                ? 'Conciliação ativa. Tudo que você importar fica guardado aqui. Para começar outro período, use “Nova conciliação” — a atual será encerrada e arquivada.'
+                : 'Conciliação ativa. Use “Nova conciliação” para começar outro período e “Encerrar conciliação” quando terminar este.'}
             </p>
           )}
         </div>
@@ -206,15 +231,28 @@ export function ReconciliationRunControls({
           >
             Nova conciliação
           </Button>
-          {!isClosed ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={() => setCloseOpen(true)}
-            >
-              Encerrar conciliação
-            </Button>
+          {context === 'vinculos' && !isClosed ? (
+            isEmptyRun ? (
+              <Tooltip>
+                <TooltipTrigger render={<span className="inline-flex" />}>
+                  <Button type="button" size="sm" variant="secondary" disabled>
+                    Encerrar conciliação
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[16rem] text-xs">
+                  Importe ao menos uma planilha para poder encerrar esta conciliação.
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => setCloseOpen(true)}
+              >
+                Encerrar conciliação
+              </Button>
+            )
           ) : null}
         </div>
       </div>
@@ -274,8 +312,31 @@ export function ReconciliationRunControls({
           <DialogHeader>
             <DialogTitle>Nova conciliação</DialogTitle>
             <DialogDescription>
-              Cria um ciclo novo e aberto para {unit === 'PEDERTRACTOR' ? 'Pedertractor' : 'Tractor'}.
-              A conciliação anterior permanece no histórico.
+              {context === 'import' && !isClosed ? (
+                isEmptyRun ? (
+                  <>
+                    Cria um ciclo novo e vazio para{' '}
+                    {unit === 'PEDERTRACTOR' ? 'Pedertractor' : 'Tractor'}. A conciliação atual
+                    (vazia) será encerrada e arquivada.
+                  </>
+                ) : (
+                  <>
+                    A conciliação atual será <strong>encerrada e arquivada</strong>
+                    {previewData?.summary
+                      ? ` (${previewData.summary.bankRecordCount.toLocaleString('pt-BR')} lançamentos banco · ${previewData.summary.internalRecordCount.toLocaleString('pt-BR')} interno)`
+                      : ''}
+                    , e um novo ciclo vazio começará para{' '}
+                    {unit === 'PEDERTRACTOR' ? 'Pedertractor' : 'Tractor'}. Os dados antigos
+                    continuam disponíveis para consulta em Conciliação.
+                  </>
+                )
+              ) : (
+                <>
+                  Cria um ciclo novo e aberto para{' '}
+                  {unit === 'PEDERTRACTOR' ? 'Pedertractor' : 'Tractor'}. A conciliação anterior
+                  permanece no histórico.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -303,7 +364,11 @@ export function ReconciliationRunControls({
               disabled={newMutation.isPending}
               onClick={() => newMutation.mutate()}
             >
-              {newMutation.isPending ? 'Criando…' : 'Criar'}
+              {newMutation.isPending
+                ? 'Criando…'
+                : context === 'import' && !isClosed && !isEmptyRun
+                  ? 'Encerrar e criar'
+                  : 'Criar'}
             </Button>
           </DialogFooter>
         </DialogContent>

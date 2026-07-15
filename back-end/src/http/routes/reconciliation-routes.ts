@@ -28,7 +28,10 @@ import {
 } from '../controllers/reconciliation-import-controller.js';
 import {
   closeReconciliationRun,
+  deleteReconciliationRun,
   getReconciliationRunClosePreview,
+  listReconciliationRuns,
+  listRunRecords,
   reopenReconciliationRun,
 } from '../controllers/reconciliation-run-controller.js';
 import {
@@ -67,6 +70,7 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     putPaymentVinculoById,
   );
   app.post('/runs', { preHandler: requireFinancial }, createReconciliationRun);
+  app.get('/runs', { preHandler: requireFinancial }, listReconciliationRuns);
   app.get(
     '/runs/latest',
     { preHandler: requireFinancial },
@@ -97,6 +101,11 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     { preHandler: requireFinancial },
     getReconciliationRunClosePreview,
   );
+  app.get(
+    '/runs/:runId/records',
+    { preHandler: requireFinancial },
+    listRunRecords,
+  );
   app.post(
     '/runs/:runId/close',
     { preHandler: requireFinancial },
@@ -106,6 +115,11 @@ export async function reconciliationRoutes(app: FastifyInstance) {
     '/runs/:runId/reopen',
     { preHandler: [authMiddleware, roleMiddleware([UserRole.ADMIN])] },
     reopenReconciliationRun,
+  );
+  app.delete(
+    '/runs/:runId',
+    { preHandler: requireFinancial },
+    deleteReconciliationRun,
   );
   app.post(
     '/runs/:runId/finalize',

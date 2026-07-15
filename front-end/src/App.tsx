@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes } from 'react-router'
 import { AppShell } from '@/components/app-shell'
 import { getStoredToken } from '@/lib/api'
+import { ConciliacoesPage } from '@/pages/ConciliacoesPage'
 import { FirstPasswordPage } from '@/pages/FirstPasswordPage'
 import { ImportDataPage } from '@/pages/ImportDataPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -25,6 +26,7 @@ const App = () => {
         <Route element={<AppShell />}>
           <Route path="/" element={<Navigate to="/conciliacao" replace />} />
           <Route path="/importar" element={<ImportDataPage />} />
+          <Route path="/conciliacoes" element={<ConciliacoesPage />} />
           <Route path="/conciliacao" element={<VinculosPage />} />
           <Route path="/contas" element={<ContasPage />} />
           <Route path="/pix-ted" element={<PixTedPage />} />

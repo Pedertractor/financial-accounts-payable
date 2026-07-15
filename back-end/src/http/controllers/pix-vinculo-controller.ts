@@ -198,6 +198,7 @@ export async function getPaymentVinculoInstruction(
       dueDate,
       hasRegistryDetails: hasEv,
       beneficiaryName,
+      manualLinkNotes: s.manualLinkNotes ?? null,
       vinculo: null,
       paidAt: s.paidAt ? s.paidAt.toISOString() : null,
       /** true = valor/nome vêm do ERP (sem par banco). */
@@ -232,6 +233,7 @@ export async function getPaymentVinculoInstruction(
     vinculo: reg ? serializeVinculoRow(reg) : null,
     paidAt: s.paidAt ? s.paidAt.toISOString() : null,
     beneficiaryName: null,
+    manualLinkNotes: null,
     evidencePath: null,
   })
 }

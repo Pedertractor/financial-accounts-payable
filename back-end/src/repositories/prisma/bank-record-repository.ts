@@ -68,6 +68,29 @@ export class BankRecordPrismaRepository {
     });
   }
 
+  async countByRunId(runId: string) {
+    return this.prisma.bankRecord.count({ where: { runId } });
+  }
+
+  /** Lançamentos do banco de uma conciliação, paginados (para visualização). */
+  async listByRunId(runId: string, opts: { skip: number; take: number }) {
+    return this.prisma.bankRecord.findMany({
+      where: { runId },
+      orderBy: [{ dueDate: 'asc' }, { rowNumber: 'asc' }],
+      skip: opts.skip,
+      take: opts.take,
+      select: {
+        id: true,
+        rowNumber: true,
+        dueDate: true,
+        beneficiaryNameRaw: true,
+        payerNameRaw: true,
+        nossoNumero: true,
+        amount: true,
+      },
+    });
+  }
+
   async findIdentityRowsByRunId(runId: string): Promise<BankRecordIdentityRow[]> {
     return this.prisma.bankRecord.findMany({
       where: { runId },

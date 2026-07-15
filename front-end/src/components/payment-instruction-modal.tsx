@@ -374,6 +374,18 @@ export function PaymentInstructionModal({
                   </span>
                 </p>
               </div>
+              {data.kind === 'BOLETO'
+                && data.manualLinkNotes != null
+                && data.manualLinkNotes.length > 0 ? (
+                <div>
+                  <p className="text-muted-foreground mb-1.5 text-xs font-medium uppercase">
+                    Observações
+                  </p>
+                  <p className="text-foreground border-border/60 bg-muted/20 rounded-md border px-3 py-2 text-sm whitespace-pre-wrap wrap-anywhere">
+                    {data.manualLinkNotes}
+                  </p>
+                </div>
+              ) : null}
               {data.kind === 'BOLETO' && data.evidencePath ? (
                 <div>
                   <p className="text-muted-foreground mb-1.5 text-xs font-medium uppercase">
