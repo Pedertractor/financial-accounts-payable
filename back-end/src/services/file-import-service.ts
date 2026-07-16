@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { extname } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import * as XLSX from 'xlsx';
 import { Prisma } from '../generated/prisma/client.js';
@@ -43,7 +42,23 @@ const PARSER_VERSION = 'excel-mvp-1';
 const MAX_SHEET_ROWS = 100_000;
 const PROGRESS_EVERY = 200;
 
-const UPLOAD_DIR_ABS = resolve(process.cwd(), env.UPLOAD_DIR);
+/**
+ * Buffer da planilha só em memória até confirmar/descartar/concluir.
+ * Não grava o arquivo em disco — só os dados importados no Postgres.
+ */
+const pendingUploadBuffers = new Map<string, Buffer>();
+
+function rememberUploadBuffer(fileUploadId: string, buffer: Buffer) {
+  pendingUploadBuffers.set(fileUploadId, buffer);
+}
+
+function takeUploadBuffer(fileUploadId: string): Buffer | undefined {
+  return pendingUploadBuffers.get(fileUploadId);
+}
+
+function releaseUploadBuffer(fileUploadId: string) {
+  pendingUploadBuffers.delete(fileUploadId);
+}
 
 /** Logs de diagnóstico (importação em duas etapas + finalize). */
 const reconciliationImportLogPrefix = '[reconciliation-import]';
@@ -224,10 +239,21 @@ export class FileImportService {
   }): Promise<{ fileUploadId: string }> {
     await new ReconciliationRunService().assertRunOpenForImport(params.runId);
     await this.getRunOrThrow(params.runId);
+    const superseded = await prisma.fileUpload.findMany({
+      where: {
+        runId: params.runId,
+        sourceType: params.sourceType,
+        status: UploadStatus.AWAITING_CONFIRM,
+      },
+      select: { id: true },
+    });
     await this.uploadRepo.cancelAwaitingStagedByRunIdAndSource(
       params.runId,
       params.sourceType,
     );
+    for (const row of superseded) {
+      releaseUploadBuffer(row.id);
+    }
     if (params.buffer.length > env.MAX_UPLOAD_BYTES) {
       throw new HttpError(
         `Arquivo excede o tamanho máximo de ${env.MAX_UPLOAD_BYTES} bytes`,
@@ -243,10 +269,7 @@ export class FileImportService {
     }
     const fileId = randomUUID();
     const stored = `${fileId}${ext}`;
-    const storagePath = join(UPLOAD_DIR_ABS, stored);
     const fileHash = createHash('sha256').update(params.buffer).digest('hex');
-
-    await writeFile(storagePath, params.buffer);
 
     const fileUpload = await this.uploadRepo.create({
       run: { connect: { id: params.runId } },
@@ -255,7 +278,7 @@ export class FileImportService {
       status: UploadStatus.RECEIVED,
       originalFileName: params.originalFileName,
       storedFileName: stored,
-      storagePath,
+      storagePath: null,
       mimeType: params.mimetype,
       fileExtension: ext.replace(/^\./, '') || 'xlsx',
       fileSizeBytes: params.buffer.length,
@@ -264,6 +287,7 @@ export class FileImportService {
       parserVersion: PARSER_VERSION,
     });
 
+    rememberUploadBuffer(fileUpload.id, params.buffer);
     void this.runProcessInBackground(fileUpload.id);
     return { fileUploadId: fileUpload.id };
   }
@@ -275,6 +299,7 @@ export class FileImportService {
     } catch (e) {
       console.error('processFileUpload', fileUploadId, e);
       const msg = e instanceof Error ? e.message : 'Erro ao importar';
+      releaseUploadBuffer(fileUploadId);
       try {
         await this.uploadRepo.updateById(fileUploadId, {
           status: UploadStatus.FAILED,
@@ -289,8 +314,9 @@ export class FileImportService {
 
   private async processFileUpload(id: string) {
     const upload = await this.uploadRepo.findById(id);
-    if (!upload?.storagePath) {
-      throw new Error('Upload inválido');
+    const buffer = takeUploadBuffer(id);
+    if (!upload || !buffer) {
+      throw new Error('Upload inválido ou buffer da planilha já foi liberado');
     }
     const t0 = Date.now();
     await this.uploadRepo.updateById(id, {
@@ -298,11 +324,6 @@ export class FileImportService {
       parsingStartedAt: new Date(),
     });
 
-    const absPath = upload.storagePath.startsWith('.')
-      ? join(process.cwd(), upload.storagePath)
-      : upload.storagePath;
-
-    const buffer = await readFile(absPath);
     const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
     const sheetName = wb.SheetNames[0];
     if (!sheetName) {
@@ -345,6 +366,7 @@ export class FileImportService {
   }
 
   private async fail(id: string, t0: number, message: string) {
+    releaseUploadBuffer(id);
     await this.uploadRepo.updateById(id, {
       status: UploadStatus.FAILED,
       errorMessage: message,
@@ -362,8 +384,12 @@ export class FileImportService {
     if (upload.status !== UploadStatus.AWAITING_CONFIRM) {
       throw new HttpError('Nada para confirmar neste upload ou já foi processado.', 400);
     }
-    if (!upload.storagePath || !upload.runId) {
-      throw new HttpError('Dados de arquivo ausentes; faça o upload de novo.', 400);
+    const buffer = takeUploadBuffer(fileUploadId);
+    if (!buffer || !upload.runId) {
+      throw new HttpError(
+        'Dados da planilha não estão mais disponíveis (servidor reiniciou ou o arquivo já foi liberado). Faça o upload de novo.',
+        400,
+      );
     }
     console.log(`${reconciliationImportLogPrefix} confirmStagedImport (commit no banco)`, {
       fileUploadId,
@@ -372,33 +398,33 @@ export class FileImportService {
       originalFileName: upload.originalFileName,
     });
     const t0 = Date.now();
-    const absPath = upload.storagePath.startsWith('.')
-      ? join(process.cwd(), upload.storagePath)
-      : upload.storagePath;
-    const buffer = await readFile(absPath);
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
-    const sheetName = upload.selectedSheetName || wb.SheetNames[0];
-    if (!sheetName) {
-      throw new HttpError('Planilha vazia ou corrompida', 400);
-    }
-    const sheet = wb.Sheets[sheetName];
-    const matrix = sheetToMatrix(sheet);
-    if (upload.sourceType === 'BANK') {
-      await this.importBank(
-        fileUploadId,
-        upload.runId,
-        matrix,
-        t0,
-        'commit',
-      );
-    } else {
-      await this.importInternal(
-        fileUploadId,
-        upload.runId,
-        matrix,
-        t0,
-        'commit',
-      );
+    try {
+      const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+      const sheetName = upload.selectedSheetName || wb.SheetNames[0];
+      if (!sheetName) {
+        throw new HttpError('Planilha vazia ou corrompida', 400);
+      }
+      const sheet = wb.Sheets[sheetName];
+      const matrix = sheetToMatrix(sheet);
+      if (upload.sourceType === 'BANK') {
+        await this.importBank(
+          fileUploadId,
+          upload.runId,
+          matrix,
+          t0,
+          'commit',
+        );
+      } else {
+        await this.importInternal(
+          fileUploadId,
+          upload.runId,
+          matrix,
+          t0,
+          'commit',
+        );
+      }
+    } finally {
+      releaseUploadBuffer(fileUploadId);
     }
   }
 
@@ -410,6 +436,7 @@ export class FileImportService {
         400,
       );
     }
+    releaseUploadBuffer(fileUploadId);
     await this.uploadRepo.updateById(fileUploadId, {
       status: UploadStatus.CANCELLED,
       errorMessage:
@@ -661,6 +688,7 @@ export class FileImportService {
         rejeitadas: rejected,
         isReimport,
       });
+      releaseUploadBuffer(fileUploadId);
       return;
     }
 
@@ -690,6 +718,7 @@ export class FileImportService {
       ignoradas: dedupPlan.skipped,
       isReimport,
     });
+    releaseUploadBuffer(fileUploadId);
   }
 
   private async importInternal(
@@ -909,6 +938,7 @@ export class FileImportService {
         rejeitadas: rejected,
         isReimport,
       });
+      releaseUploadBuffer(fileUploadId);
       return;
     }
 
@@ -938,6 +968,7 @@ export class FileImportService {
       ignoradas: dedupPlan.skipped,
       isReimport,
     });
+    releaseUploadBuffer(fileUploadId);
   }
 
   /**

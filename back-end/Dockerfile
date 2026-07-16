@@ -30,8 +30,8 @@ COPY --from=build /usr/src/app/prisma.config.ts ./prisma.config.ts
 # Seed roda com tsx e importa integrações em src/ (a API em produção usa só dist/).
 COPY --from=build /usr/src/app/src ./src
 
-# porta que vai ficar exposta para acessar o back-end
-EXPOSE 3135
+# porta padrão do app (override via PORT no .env / compose)
+EXPOSE 3030
 
 # prisma generate atualiza src/generated; seed é idempotente (pula ADMs já existentes).
 CMD ["sh", "-c", "npx prisma generate && npx prisma migrate deploy && npx prisma db seed && npm run start"]

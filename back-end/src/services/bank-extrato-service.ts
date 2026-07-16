@@ -1,6 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import * as XLSX from 'xlsx';
 import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaClient } from '../generated/prisma/client.js';
@@ -8,7 +5,6 @@ import {
   BankExtratoMatchKind,
   SuggestionStatus,
 } from '../generated/prisma/enums.js';
-import { env } from '../env/index.js';
 import { HttpError } from '../http/erros/index.js';
 import {
   extratoRequiredColumnsPresent,
@@ -28,7 +24,6 @@ import {
   type ScoringInternalRow,
 } from './suggestion-pair-scoring.js';
 
-const UPLOAD_DIR_ABS = resolve(process.cwd(), env.UPLOAD_DIR);
 const MIN_AUTO_NAME_SCORE = 88;
 const SHEET_ROW_CAP = 50_000;
 
@@ -402,13 +397,6 @@ export class BankExtratoService {
 
     const refDateUtc = new Date(`${referenceYmd}T12:00:00.000Z`);
 
-    await mkdir(UPLOAD_DIR_ABS, { recursive: true });
-    const storedName = `extrato_${randomUUID()}.xlsx`;
-    const storagePath = join('extratos', storedName);
-    const absPath = resolve(UPLOAD_DIR_ABS, storagePath);
-    await mkdir(resolve(UPLOAD_DIR_ABS, 'extratos'), { recursive: true });
-    await writeFile(absPath, params.buffer);
-
     const lineRows: {
       rowNumber: number;
       paymentDate: Date | null;
@@ -467,7 +455,7 @@ export class BankExtratoService {
           runId: params.runId,
           uploadedById: params.userId,
           originalFileName: params.originalFileName,
-          storagePath,
+          storagePath: null,
           referenceDate: refDateUtc,
           compareFromYmd: params.compareFromYmd,
           compareToYmd: params.compareToYmd,

@@ -13,6 +13,10 @@ RUN npm install
 # Copia o projeto
 COPY . .
 
+# URL da API usada no browser (bake no build do Vite)
+ARG VITE_API_BASE_URL=http://localhost:3030/api
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 # Build da aplicação
 RUN npm run build
 
