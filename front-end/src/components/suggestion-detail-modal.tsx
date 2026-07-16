@@ -88,6 +88,18 @@ function ymdSaoPauloNow(): string {
   });
 }
 
+function isoToYmdSaoPaulo(iso: string | null | undefined): string {
+  if (iso == null || iso === '') {
+    return ymdSaoPauloNow();
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    return iso;
+  }
+  return new Date(iso).toLocaleDateString('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+  });
+}
+
 function ymdToLocalDate(ymd: string): Date {
   const [y, m, d] = ymd.split('-').map(Number);
   return new Date(y, m - 1, d);
@@ -360,7 +372,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
       parts: [
         {
           type: 'text',
-          t: 'Há mais de um lançamento bancário e/ou no ERP com o mesmo valor e vencimento. Selecione a linha do extrato e a do fornecedor desejados nas tabelas abaixo e confirme o vínculo. ',
+          t: 'Há mais de um lançamento bancário e/ou no EPROM com o mesmo valor e vencimento. Selecione a linha do extrato e a do fornecedor desejados nas tabelas abaixo e confirme o vínculo. ',
         },
       ],
     };
@@ -370,7 +382,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
       parts: [
         {
           type: 'text',
-          t: 'A sugestão foi classificada como correspondência de nome e valor. Não foi detectada divergência entre banco e ERP para este item.',
+          t: 'A sugestão foi classificada como correspondência de nome e valor. Não foi detectada divergência entre banco e EPROM para este item.',
         },
       ],
     };
@@ -385,7 +397,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
         { type: 'code', t: b || '—' },
         {
           type: 'text',
-          t: ') mas não existe lançamento interno/ERP associado a esta sugestão.',
+          t: ') mas não existe lançamento interno/EPROM associado a esta sugestão.',
         },
       ],
     };
@@ -393,7 +405,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
   if (r.reason === 'NO_BANK_MATCH') {
     return {
       parts: [
-        { type: 'text', t: 'Há registro no ERP (ex.: ' },
+        { type: 'text', t: 'Há registro no EPROM (ex.: ' },
         { type: 'code', t: i || '—' },
         {
           type: 'text',
@@ -465,7 +477,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
           { type: 'code', t: i },
           {
             type: 'text',
-            t: ' (ERP) não coincidem literalmente, e os valores ',
+            t: ' (EPROM) não coincidem literalmente, e os valores ',
           },
           { type: 'code', t: formatBrlAmount(r.amountBank) },
           { type: 'text', t: ' (banco) e ' },
@@ -485,7 +497,7 @@ function buildAnalysisNarrative(r: SuggestionListItem): {
         parts: [
           { type: 'text', t: 'Os valores banco ' },
           { type: 'code', t: formatBrlAmount(r.amountBank) },
-          { type: 'text', t: ' e ERP ' },
+          { type: 'text', t: ' e EPROM ' },
           { type: 'code', t: formatBrlAmount(r.amountInternal) },
           {
             type: 'text',
@@ -537,6 +549,9 @@ const TEN_ROWS_SCROLL_CLASS =
 const AGGREGATED_ERP_VINCULOS_SCROLL_CLASS =
   'max-h-[min(27.5rem,70vh)] overflow-y-auto [scrollbar-gutter:stable]';
 
+const TABLE_HEADER_STICKY =
+  'bg-card sticky top-0 z-10 shadow-[0_1px_0_0_hsl(var(--border))]';
+
 const MAX_DISTINCT_COMBO_TABS = 3;
 
 function bankOnlyComboKey(internalRecordIds: string[]): string {
@@ -559,9 +574,12 @@ function BankOnlyInternalSumPanel({
   /** Só 1/2/3 alinhado ao `Link2` em Motivo: sem isto, só o "+" (manual). */
   const suggestionsAllowed = row.sumAggregationAvailable === true;
   const [manualPoolDayYmd, setManualPoolDayYmd] = useState(() =>
-    ymdSaoPauloNow(),
+    isoToYmdSaoPaulo(row.dueDate),
   );
   const [calPickerOpen, setCalPickerOpen] = useState(false);
+  const [calMonth, setCalMonth] = useState(() =>
+    ymdToLocalDate(isoToYmdSaoPaulo(row.dueDate)),
+  );
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['bank-only-internal-sums', runId, row.id, manualPoolDayYmd],
     queryFn: ({ signal }) =>
@@ -571,6 +589,8 @@ function BankOnlyInternalSumPanel({
       }),
     enabled: open && row.reason === 'NO_INTERNAL_MATCH' && isOpen,
   });
+  const bankDayYmd = data?.bankDayYmd ?? isoToYmdSaoPaulo(row.dueDate);
+  const willAlignBankDue = manualPoolDayYmd !== bankDayYmd;
   /** Ordenado por conf. de nome; remove conjuntos repetidos (mesmos títulos) — 1, 2 ou 3 abas consoante haja opções distintas. */
   const distinctComboOptions = useMemo((): BankOnlySumCombination[] => {
     if (!suggestionsAllowed) {
@@ -645,7 +665,12 @@ function BankOnlyInternalSumPanel({
 
   const mutation = useMutation({
     mutationFn: (internalRecordIds: string[]) =>
-      resolveBankOnlyInternalSum(runId, row.id, { internalRecordIds }),
+      resolveBankOnlyInternalSum(runId, row.id, {
+        internalRecordIds,
+        ...(willAlignBankDue
+          ? { alignBankDueDateYmd: manualPoolDayYmd }
+          : {}),
+      }),
     onSuccess: () => {
       onResolved?.();
     },
@@ -700,7 +725,7 @@ function BankOnlyInternalSumPanel({
       {isLoading ? (
         <div className='text-muted-foreground flex items-center justify-center gap-2 py-1 text-sm'>
           <Loader2 className='size-4 shrink-0 animate-spin' />
-          Buscando somas no ERP…
+          Buscando somas no EPROM…
         </div>
       ) : null}
       {isError ? (
@@ -775,53 +800,70 @@ function BankOnlyInternalSumPanel({
                   </Button>
                 ) : null}
               </div>
-              {manualOpen && manualPoolEligibleGlobally ? (
-                <Popover open={calPickerOpen} onOpenChange={setCalPickerOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      type='button'
-                      variant='outline'
-                      className='text-foreground h-8 shrink-0 gap-1.5 px-2.5'
-                      title='Vencimentos (lista manual)'
-                      aria-label='Escolher dia para títulos na seleção manual'
-                    >
-                      <CalendarIcon
-                        className='text-muted-foreground size-3.5'
-                        aria-hidden
-                      />
-                      <span className='max-w-34 truncate text-xs'>
-                        {formatYmdLongPt(manualPoolDayYmd)}
-                      </span>
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    className='w-auto p-2'
-                    align='end'
-                    side='bottom'
-                    sideOffset={6}
+              <Popover
+                open={calPickerOpen}
+                onOpenChange={(o) => {
+                  setCalPickerOpen(o);
+                  if (o) {
+                    setCalMonth(ymdToLocalDate(manualPoolDayYmd));
+                  }
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    className='text-foreground h-8 shrink-0 gap-1.5 px-2.5'
+                    title='Buscar títulos / transferir extrato para outro vencimento'
+                    aria-label='Escolher dia para buscar títulos do EPROM'
                   >
-                    <Calendar
-                      mode='single'
-                      numberOfMonths={1}
-                      className='p-0'
-                      selected={ymdToLocalDate(manualPoolDayYmd)}
-                      onSelect={(d) => {
-                        if (!d) {
-                          return;
-                        }
-                        const ymd = d.toLocaleDateString('en-CA', {
-                          timeZone: 'America/Sao_Paulo',
-                        });
-                        setManualPoolDayYmd(ymd);
-                        setCalPickerOpen(false);
-                        setSelectedManual(new Set());
-                      }}
+                    <CalendarIcon
+                      className='text-muted-foreground size-3.5'
+                      aria-hidden
                     />
-                  </PopoverContent>
-                </Popover>
-              ) : null}
+                    <span className='max-w-34 truncate text-xs'>
+                      {formatYmdLongPt(manualPoolDayYmd)}
+                    </span>
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  className='w-auto p-2'
+                  align='end'
+                  side='bottom'
+                  sideOffset={6}
+                >
+                  <Calendar
+                    mode='single'
+                    numberOfMonths={1}
+                    className='p-0'
+                    month={calMonth}
+                    onMonthChange={setCalMonth}
+                    selected={ymdToLocalDate(manualPoolDayYmd)}
+                    onSelect={(d) => {
+                      if (!d) {
+                        return;
+                      }
+                      const ymd = d.toLocaleDateString('en-CA', {
+                        timeZone: 'America/Sao_Paulo',
+                      });
+                      setManualPoolDayYmd(ymd);
+                      setCalMonth(d);
+                      setCalPickerOpen(false);
+                      setSelectedManual(new Set());
+                      setComboIdx(0);
+                    }}
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
           )}
+          {willAlignBankDue && showBlock ? (
+            <p className='text-amber-800 dark:text-amber-200 text-center text-xs' role='status'>
+              Extrato em {formatYmdLongPt(bankDayYmd)} · buscando EPROM em{' '}
+              {formatYmdLongPt(manualPoolDayYmd)}. Ao vincular, o vencimento do
+              extrato será transferido para {formatYmdLongPt(manualPoolDayYmd)}.
+            </p>
+          ) : null}
 
           {showAutomaticErpBlock ? (
             <div className='space-y-3'>
@@ -833,7 +875,7 @@ function BankOnlyInternalSumPanel({
               >
                 <div className='border-border/60 w-full min-w-0 max-w-4xl rounded-lg border sm:mx-auto'>
                   <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-tight'>
-                    ERP (fornecedor) — soma = {formatBrlAmount(b.amount)}
+                    EPROM (fornecedor) — soma = {formatBrlAmount(b.amount)}
                     {data?.sumDayYmd ? (
                       <span className='ml-1 font-normal normal-case'>
                         · venc. {formatYmdLongPt(data.sumDayYmd)}
@@ -841,8 +883,8 @@ function BankOnlyInternalSumPanel({
                     ) : null}
                   </p>
                   <Table>
-                    <TableHeader>
-                      <TableRow className='hover:bg-transparent'>
+                    <TableHeader className={TABLE_HEADER_STICKY}>
+                      <TableRow className='hover:bg-transparent bg-card'>
                         <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs' />
                         <TableHead className='text-[0.65rem] font-medium'>
                           Fornecedor
@@ -867,7 +909,7 @@ function BankOnlyInternalSumPanel({
                               className='border-input accent-primary size-3.5 cursor-not-allowed rounded border opacity-80'
                               checked
                               disabled
-                              aria-label={`Lançamento ERP ${c.supplierNameRaw}`}
+                              aria-label={`Lançamento EPROM ${c.supplierNameRaw}`}
                             />
                           </TableCell>
                           <TableCell className='text-foreground/90 min-w-0 text-sm wrap-anywhere'>
@@ -936,6 +978,8 @@ function BankOnlyInternalSumPanel({
               isPending={mutation.isPending}
               resolveErr={resolveErr}
               listDayYmd={manualPoolDayYmd}
+              willAlignBankDue={willAlignBankDue}
+              bankDayYmd={bankDayYmd}
             />
           ) : null}
         </div>
@@ -955,9 +999,13 @@ function ManualSomaSemParBanco({
   isPending,
   resolveErr,
   listDayYmd,
+  willAlignBankDue,
+  bankDayYmd,
 }: {
   b: { amount: string };
   listDayYmd: string;
+  willAlignBankDue: boolean;
+  bankDayYmd: string;
   sortedManual: {
     id: string;
     supplierNameRaw: string;
@@ -988,11 +1036,17 @@ function ManualSomaSemParBanco({
           </span>
         </p>
       </div>
+      {willAlignBankDue ? (
+        <p className='text-muted-foreground text-xs' role='status'>
+          Ao vincular, o extrato ({formatYmdLongPt(bankDayYmd)}) será
+          transferido para {formatYmdLongPt(listDayYmd)}.
+        </p>
+      ) : null}
       <div className={TEN_ROWS_SCROLL_CLASS} role='list'>
         <div className='border-border/60 w-full min-w-0 max-w-4xl rounded-lg border sm:mx-auto'>
           <Table>
-            <TableHeader>
-              <TableRow className='hover:bg-transparent'>
+            <TableHeader className={TABLE_HEADER_STICKY}>
+              <TableRow className='hover:bg-transparent bg-card'>
                 <TableHead className='w-8 px-1' />
                 <TableHead className='text-[0.65rem] font-medium'>
                   Fornecedor
@@ -1149,7 +1203,7 @@ function MultipleCandidatesSection({
       <p className='text-muted-foreground text-xs'>
         {data.nBanks} movimento(s) bancário(s) · {data.nInternals} interno(s)
         neste grupo. Escolha a linha do extrato bancário e a do fornecedor no
-        ERP; trocas podem ajustar outra sugestão com o mesmo valor e vencimento.
+        EPROM; trocas podem ajustar outra sugestão com o mesmo valor e vencimento.
         {data.excludedLowNameSimilarity != null &&
         (data.excludedLowNameSimilarity.bankRows > 0 ||
           data.excludedLowNameSimilarity.internalRows > 0) ? (
@@ -1162,7 +1216,7 @@ function MultipleCandidatesSection({
               </span>
             ) : null}
             {data.excludedLowNameSimilarity.internalRows > 0 ? (
-              <span>{data.excludedLowNameSimilarity.internalRows} no ERP</span>
+              <span>{data.excludedLowNameSimilarity.internalRows} no EPROM</span>
             ) : null}{' '}
             (conf. nome abaixo de {data.minNameScoreCandidateList ?? 25}% em
             relação ao outro lado; não exibidos como alternativa plausível).
@@ -1228,10 +1282,10 @@ function MultipleCandidatesSection({
         <div
           className='border-border/60 min-w-0 rounded-lg border'
           role='radiogroup'
-          aria-label='Escolher o fornecedor (ERP)'
+          aria-label='Escolher o fornecedor (EPROM)'
         >
           <p className='text-muted-foreground border-border/50 border-b px-3 py-2 text-[0.65rem] font-semibold tracking-tight'>
-            ERP (fornecedor)
+            EPROM (fornecedor)
           </p>
           <Table>
             <TableHeader>
@@ -1356,6 +1410,7 @@ function LinkPaymentVinculoSection({
         onOpenChange={setBoletoOpen}
         runId={runId}
         suggestionId={row.id}
+        currentDueDate={row.dueDate}
         onSubmittingChange={setBoletoSubmitting}
         onSuccess={onResolved}
       />
@@ -1434,6 +1489,7 @@ function ManualBoletoVinculoSection({
         onOpenChange={setOpen}
         runId={runId}
         suggestionId={row.id}
+        currentDueDate={row.dueDate}
         onSuccess={onResolved}
       />
       <div className='flex flex-wrap justify-end gap-2'>
@@ -1535,7 +1591,7 @@ function AggregatedErpVinculosTable({
   return (
     <div className='w-full min-w-0 space-y-2'>
       <p className='text-muted-foreground text-[0.65rem] font-semibold tracking-tight'>
-        Títulos ERP vinculados (soma = extrato)
+        Títulos EPROM vinculados (soma = extrato)
       </p>
       <div
         className={cn(
@@ -1544,8 +1600,8 @@ function AggregatedErpVinculosTable({
         )}
       >
         <Table>
-          <TableHeader className='bg-card sticky top-0 z-10 shadow-[0_1px_0_0_hsl(var(--border))]'>
-            <TableRow className='hover:bg-transparent'>
+          <TableHeader className={TABLE_HEADER_STICKY}>
+            <TableRow className='hover:bg-transparent bg-card'>
               <TableHead className='text-[0.65rem] font-medium'>
                 Fornecedor
               </TableHead>
@@ -1595,11 +1651,11 @@ type SideCardProps = {
 
 function SideCard({ kind, r, nameWarn, amountWarn }: SideCardProps) {
   const isBank = kind === 'bank';
-  const title = isBank ? 'Extrato bancário' : 'Registro interno (ERP)';
+  const title = isBank ? 'Extrato bancário' : 'Registro interno (EPROM)';
   const name = isBank ? r.externalName : r.internalName;
   const amount = isBank ? r.amountBank : r.amountInternal;
-  const nameLabel = isBank ? 'Nome no banco' : 'Nome no ERP';
-  const amountLabel = isBank ? 'Valor (banco)' : 'Valor (ERP)';
+  const nameLabel = isBank ? 'Nome no banco' : 'Nome no EPROM';
+  const amountLabel = isBank ? 'Valor (banco)' : 'Valor (EPROM)';
   return (
     <div className='border-border/80 flex min-w-0 flex-1 flex-col gap-3 rounded-lg border bg-white p-4 dark:bg-card'>
       <h3 className='text-muted-foreground text-[0.7rem] font-bold tracking-tight'>
@@ -1619,7 +1675,7 @@ function SideCard({ kind, r, nameWarn, amountWarn }: SideCardProps) {
         warn={amountWarn}
         subCaption={
           amountWarn
-            ? 'Valor banco e ERP não coincidem nesta sugestão'
+            ? 'Valor banco e EPROM não coincidem nesta sugestão'
             : undefined
         }
       />
@@ -1838,7 +1894,7 @@ export function SuggestionDetailModal({
       >
         <DialogHeader className='border-border/60 shrink-0 space-y-1 border-b p-4 pb-3 pr-12'>
           <DialogTitle>
-            Comparação banco × ERP
+            Comparação banco × EPROM
             {line != null ? (
               <span className='text-muted-foreground font-mono text-sm font-normal'>
                 {' '}

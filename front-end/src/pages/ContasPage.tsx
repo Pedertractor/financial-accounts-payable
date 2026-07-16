@@ -354,6 +354,10 @@ export function ContasPage() {
     const r = getStoredVinculosDateRange();
     return ymdToLocalDate(r.from);
   });
+  const [calMonth, setCalMonth] = useState<Date>(() => {
+    const r = getStoredVinculosDateRange();
+    return ymdToLocalDate(r.from);
+  });
   const [tableSort, setTableSort] = useState<{
     column: SortColumn
     dir: SortDir
@@ -707,7 +711,11 @@ export function ContasPage() {
               open={calOpen}
               onOpenChange={(o) => {
                 setCalOpen(o);
-                if (o) setCalDate(ymdToLocalDate(compareRange.from));
+                if (o) {
+                  const d = ymdToLocalDate(compareRange.from);
+                  setCalDate(d);
+                  setCalMonth(d);
+                }
               }}
             >
               <PopoverTrigger asChild>
@@ -728,10 +736,13 @@ export function ContasPage() {
                   mode='single'
                   numberOfMonths={1}
                   className='p-0'
+                  month={calMonth}
+                  onMonthChange={setCalMonth}
                   selected={calDate}
                   onSelect={(d) => {
                     if (!d) return;
                     setCalDate(d);
+                    setCalMonth(d);
                     const ymd = format(d, 'yyyy-MM-dd');
                     setCompareRange({ from: ymd, to: ymd });
                     setCalOpen(false);

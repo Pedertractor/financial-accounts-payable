@@ -1,24 +1,57 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { useId, useRef, useState } from 'react';
-import { ImagePlus, Loader2, X } from 'lucide-react';
+import { Calendar as CalendarIcon, ImagePlus, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Calendar } from '@/components/ui/calendar';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { Textarea } from '@/components/ui/textarea';
 import { linkManualBoletoVinculo } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const NOTES_MAX = 2000;
 
+function isoToYmdSaoPaulo(iso: string | null | undefined): string {
+  if (iso == null || iso === '') {
+    return new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+    });
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    return iso;
+  }
+  return new Date(iso).toLocaleDateString('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+  });
+}
+
+function ymdToLocalDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatYmdLongPt(ymd: string): string {
+  return format(ymdToLocalDate(ymd), 'PPP', { locale: ptBR });
+}
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   runId: string;
   suggestionId: string;
+  /** Vencimento atual do lançamento (ISO ou YYYY-MM-DD) para pré-preencher o seletor. */
+  currentDueDate?: string | null;
   onSuccess?: () => void;
   /** Para desativar botões PIX/TED enquanto confirma. */
   onSubmittingChange?: (pending: boolean) => void;
@@ -29,6 +62,7 @@ export function BoletoManualVinculoModal({
   onOpenChange,
   runId,
   suggestionId,
+  currentDueDate,
   onSuccess,
   onSubmittingChange,
 }: Props) {
@@ -39,6 +73,15 @@ export function BoletoManualVinculoModal({
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [targetDueYmd, setTargetDueYmd] = useState(() =>
+    isoToYmdSaoPaulo(currentDueDate),
+  );
+  const [calOpen, setCalOpen] = useState(false);
+  const [calMonth, setCalMonth] = useState(() =>
+    ymdToLocalDate(isoToYmdSaoPaulo(currentDueDate)),
+  );
+  const originalDueYmd = isoToYmdSaoPaulo(currentDueDate);
+  const willTransferDate = targetDueYmd !== originalDueYmd;
 
   const allowedMime = (f: File) => {
     const t = f.type.toLowerCase();
@@ -56,8 +99,27 @@ export function BoletoManualVinculoModal({
     setFile(next);
   }
 
+  function resetForm() {
+    setFile(null);
+    setNotes('');
+    const ymd = isoToYmdSaoPaulo(currentDueDate);
+    setTargetDueYmd(ymd);
+    setCalMonth(ymdToLocalDate(ymd));
+    setCalOpen(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }
+
   const mut = useMutation({
-    mutationFn: () => linkManualBoletoVinculo(runId, suggestionId, file, notes),
+    mutationFn: () =>
+      linkManualBoletoVinculo(
+        runId,
+        suggestionId,
+        file,
+        notes,
+        willTransferDate ? targetDueYmd : null,
+      ),
     onMutate: () => {
       onSubmittingChange?.(true);
     },
@@ -65,11 +127,7 @@ export function BoletoManualVinculoModal({
       onSubmittingChange?.(false);
     },
     onSuccess: () => {
-      setFile(null);
-      setNotes('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetForm();
       onOpenChange(false);
       onSuccess?.();
       void queryClient.invalidateQueries({
@@ -83,11 +141,11 @@ export function BoletoManualVinculoModal({
       open={open}
       onOpenChange={(o) => {
         if (!o) {
-          setFile(null);
-          setNotes('');
-          if (fileInputRef.current) {
-            fileInputRef.current.value = '';
-          }
+          resetForm();
+        } else {
+          const ymd = isoToYmdSaoPaulo(currentDueDate);
+          setTargetDueYmd(ymd);
+          setCalMonth(ymdToLocalDate(ymd));
         }
         onOpenChange(o);
       }}
@@ -101,6 +159,65 @@ export function BoletoManualVinculoModal({
             Ao clicar em confirmar conferência, você está confirmando que existe
             vínculo, porém não encontrado pelo sistema.
           </p>
+          <div className='mt-4'>
+            <p className='text-foreground mb-2 text-sm font-medium'>
+              Transferir vencimento
+            </p>
+            <p className='text-muted-foreground mb-2 text-xs leading-relaxed'>
+              Use quando o par estiver em outra data. O lançamento passa a
+              aparecer na triagem no dia escolhido.
+            </p>
+            <Popover
+              open={calOpen}
+              onOpenChange={(o) => {
+                setCalOpen(o);
+                if (o) {
+                  setCalMonth(ymdToLocalDate(targetDueYmd));
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='h-9 w-full justify-start gap-2 sm:w-auto'
+                  aria-label='Escolher data de vencimento'
+                >
+                  <CalendarIcon
+                    className='text-muted-foreground size-3.5'
+                    aria-hidden
+                  />
+                  <span className='text-sm'>{formatYmdLongPt(targetDueYmd)}</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className='w-auto p-2' align='start' sideOffset={6}>
+                <Calendar
+                  mode='single'
+                  numberOfMonths={1}
+                  className='p-0'
+                  month={calMonth}
+                  onMonthChange={setCalMonth}
+                  selected={ymdToLocalDate(targetDueYmd)}
+                  onSelect={(d) => {
+                    if (!d) return;
+                    setTargetDueYmd(
+                      d.toLocaleDateString('en-CA', {
+                        timeZone: 'America/Sao_Paulo',
+                      }),
+                    );
+                    setCalMonth(d);
+                    setCalOpen(false);
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+            {willTransferDate ? (
+              <p className='text-amber-800 dark:text-amber-200 mt-2 text-xs' role='status'>
+                Vencimento atual {formatYmdLongPt(originalDueYmd)} →{' '}
+                {formatYmdLongPt(targetDueYmd)}.
+              </p>
+            ) : null}
+          </div>
           <div className='mt-4'>
             <p className='text-foreground mb-2 text-sm font-medium'>
               Comprovante (opcional)

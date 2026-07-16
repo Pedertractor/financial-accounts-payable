@@ -718,7 +718,9 @@ export type BankOnlyInternalSumResponse = {
   applicable: boolean
   targetAmount: string | null
   targetCents: number | null
-  /** Vencimento (fuso SP) usado na soma automática (YYYY-MM-DD). */
+  /** Vencimento original do extrato (YYYY-MM-DD, fuso SP). */
+  bankDayYmd?: string
+  /** Vencimento (fuso SP) usado na soma automática e no pool manual (YYYY-MM-DD). */
   sumDayYmd?: string
   /** Filtro da lista manual devolvida (YYYY-MM-DD). */
   manualPoolDayYmd?: string
@@ -768,9 +770,14 @@ export async function getBankOnlyInternalSumCandidates(
 export async function resolveBankOnlyInternalSum(
   runId: string,
   suggestionId: string,
-  body: { internalRecordIds: string[] },
+  body: { internalRecordIds: string[]; alignBankDueDateYmd?: string },
 ): Promise<{
-  suggestion: { id: string; status: string; confirmedAt: string | null }
+  suggestion: {
+    id: string
+    status: string
+    confirmedAt: string | null
+    alignBankDueDateYmd?: string | null
+  }
 }> {
   return apiJson(
     `/reconciliation/runs/${runId}/suggestions/${suggestionId}/resolve-bank-only-internal-sum`,
@@ -818,8 +825,14 @@ export async function linkManualBoletoVinculo(
   suggestionId: string,
   imageFile: File | null,
   notes?: string | null,
+  targetDueDateYmd?: string | null,
 ): Promise<{
-  suggestion: { id: string; status: string; confirmedAt: string | null }
+  suggestion: {
+    id: string
+    status: string
+    confirmedAt: string | null
+    targetDueDateYmd?: string | null
+  }
 }> {
   const t = getStoredToken()
   if (!t) {
@@ -833,6 +846,10 @@ export async function linkManualBoletoVinculo(
   if (trimmedNotes != null && trimmedNotes.length > 0) {
     form.append('notes', trimmedNotes)
   }
+  const trimmedDue = targetDueDateYmd?.trim()
+  if (trimmedDue != null && /^\d{4}-\d{2}-\d{2}$/.test(trimmedDue)) {
+    form.append('targetDueDateYmd', trimmedDue)
+  }
   const res = await fetch(
     `${base}/reconciliation/runs/${runId}/suggestions/${suggestionId}/link-manual-boleto`,
     {
@@ -843,7 +860,14 @@ export async function linkManualBoletoVinculo(
   )
   const data = (await res.json().catch(() => ({}))) as
     | { error?: string }
-    | { suggestion: { id: string; status: string; confirmedAt: string | null } }
+    | {
+        suggestion: {
+          id: string
+          status: string
+          confirmedAt: string | null
+          targetDueDateYmd?: string | null
+        }
+      }
   if (!res.ok) {
     const msg =
       typeof (data as { error?: string }).error === 'string'
@@ -851,7 +875,14 @@ export async function linkManualBoletoVinculo(
         : `HTTP ${res.status}`
     throw new Error(msg)
   }
-  return data as { suggestion: { id: string; status: string; confirmedAt: string | null } }
+  return data as {
+    suggestion: {
+      id: string
+      status: string
+      confirmedAt: string | null
+      targetDueDateYmd?: string | null
+    }
+  }
 }
 
 export async function markSuggestionPaid(

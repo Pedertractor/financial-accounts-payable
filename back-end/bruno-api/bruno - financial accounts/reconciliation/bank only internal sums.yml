@@ -1,0 +1,22 @@
+info:
+  name: bank only internal sums
+  type: http
+  seq: 21
+
+http:
+  method: GET
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/suggestions/{{SUGGESTION_ID}}/bank-only-internal-sums?manualPoolDayYmd=2026-07-15"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+docs: |-
+  Lista combinações (soma) e pool manual de internos sem par banco.
+  Query opcional manualPoolDayYmd (YYYY-MM-DD): filtra soma automática e lista manual
+  nesse vencimento (padrão = vencimento do extrato). Útil quando o par está em outra data.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

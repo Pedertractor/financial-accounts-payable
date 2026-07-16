@@ -88,13 +88,20 @@ const manualLinkNotesSchema = z
   .transform((v) => (v.length === 0 ? null : v))
   .nullable();
 
+const ymdSaoPauloSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
 const bankOnlyInternalSumsQuerySchema = z.object({
-  /** Filtro de vencimento (SP) da lista para vínculo manual. Padrão: hoje. */
-  manualPoolDayYmd: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional(),
+  /**
+   * Dia (SP) para soma automática e lista manual.
+   * Padrão: vencimento do extrato (ou hoje se o banco não tiver data).
+   */
+  manualPoolDayYmd: ymdSaoPauloSchema.optional(),
 });
+
+/** Converte YYYY-MM-DD (calendário SP) no instante 00:00 -03 usado em dueDate. */
+function dueDateFromYmdSaoPaulo(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00-03:00`);
+}
 
 /** Só “Confirmar (A)” em exato, vários candidatos, ou motivos de revisão. */
 export function isReasonConfirmable(reason: SuggestionReason): boolean {
@@ -800,6 +807,7 @@ export async function linkManualBoletoVinculo(
   let mimetype = '';
   let originalFileName: string | null = null;
   let notesRaw: string | null = null;
+  let targetDueDateYmdRaw: string | null = null;
   for await (const part of request.parts()) {
     if (part.type === 'file') {
       if (part.fieldname === 'evidence' || part.fieldname === 'file') {
@@ -816,10 +824,19 @@ export async function linkManualBoletoVinculo(
       typeof part.value === 'string'
     ) {
       notesRaw = part.value;
+    } else if (
+      part.fieldname === 'targetDueDateYmd' &&
+      typeof part.value === 'string'
+    ) {
+      targetDueDateYmdRaw = part.value;
     }
   }
 
   const notes = manualLinkNotesSchema.parse(notesRaw);
+  const targetDueDateYmd =
+    targetDueDateYmdRaw != null && targetDueDateYmdRaw.trim().length > 0
+      ? ymdSaoPauloSchema.parse(targetDueDateYmdRaw.trim())
+      : null;
 
   const s = await prisma.matchSuggestion.findFirst({
     where: { id: suggestionId, runId },
@@ -860,17 +877,33 @@ export async function linkManualBoletoVinculo(
   }
 
   const now = new Date();
-  const result = await prisma.matchSuggestion.update({
-    where: { id: s.id },
-    data: {
-      status: SuggestionStatus.APPROVED,
-      reason: SuggestionReason.BOLETO_VINCULO_OK,
-      paymentVinculoKind: PaymentVinculoKind.BOLETO,
-      manualBoletoEvidenceRelPath: relPath,
-      manualLinkNotes: notes,
-      reviewedById: userId,
-      confirmedAt: now,
-    },
+  const result = await prisma.$transaction(async (tx) => {
+    if (targetDueDateYmd != null) {
+      const dueDate = dueDateFromYmdSaoPaulo(targetDueDateYmd);
+      if (bankOnlyOk) {
+        await tx.bankRecord.update({
+          where: { id: s.bankLinks[0]!.bankRecordId },
+          data: { dueDate },
+        });
+      } else {
+        await tx.internalRecord.update({
+          where: { id: s.internalLinks[0]!.internalRecordId },
+          data: { dueDate },
+        });
+      }
+    }
+    return tx.matchSuggestion.update({
+      where: { id: s.id },
+      data: {
+        status: SuggestionStatus.APPROVED,
+        reason: SuggestionReason.BOLETO_VINCULO_OK,
+        paymentVinculoKind: PaymentVinculoKind.BOLETO,
+        manualBoletoEvidenceRelPath: relPath,
+        manualLinkNotes: notes,
+        reviewedById: userId,
+        confirmedAt: now,
+      },
+    });
   });
 
   return reply.status(200).send({
@@ -878,6 +911,7 @@ export async function linkManualBoletoVinculo(
       id: result.id,
       status: result.status,
       confirmedAt: result.confirmedAt?.toISOString() ?? null,
+      targetDueDateYmd,
     },
   });
 }
@@ -1534,6 +1568,11 @@ export async function resolveMultipleCandidateAndConfirm(
 const bankOnlyInternalSumBody = z.object({
   /** Agregado com muitas parcelas (ex.: dezenas de títulos no extrato). */
   internalRecordIds: z.array(z.string().min(1)).min(2).max(500),
+  /**
+   * Se informado e diferente do vencimento atual do extrato, atualiza o
+   * `BankRecord.dueDate` para este dia (SP) — alinha a triagem ao dia dos ERP.
+   */
+  alignBankDueDateYmd: ymdSaoPauloSchema.optional(),
 });
 
 function moneyDecimalToCents(d: Prisma.Decimal): number {
@@ -1622,10 +1661,15 @@ export async function getBankOnlyInternalSumCandidates(
     }
   }
   const bankDay = isoDateOrNull(bank.dueDate);
-  /** Só soma automática nesse vencimento (fuso SP); se extrato sem data, hoje. */
-  const sumDayYmd = bankDay ?? todayYmdSaoPaulo();
-  /** Pool manual filtra por este dia; padrão hoje. */
-  const manualFilterYmd = manualPoolDayYmdQuery ?? todayYmdSaoPaulo();
+  /** Vencimento original do extrato (SP); se ausente, hoje. */
+  const bankDayYmd = bankDay ?? todayYmdSaoPaulo();
+  /**
+   * Dia usado na soma automática e no pool manual.
+   * Query permite buscar títulos em outro vencimento (par em datas diferentes).
+   */
+  const filterYmd = manualPoolDayYmdQuery ?? bankDayYmd;
+  const sumDayYmd = filterYmd;
+  const manualFilterYmd = filterYmd;
   const manualPoolEligibleGlobally = pool.length >= 2;
   const bScore: {
     amount: Prisma.Decimal;
@@ -1674,6 +1718,7 @@ export async function getBankOnlyInternalSumCandidates(
       applicable: canManualVincolo || manualPoolEligibleGlobally,
       targetAmount: bank.amount.toString(),
       targetCents,
+      bankDayYmd,
       sumDayYmd,
       manualPoolDayYmd: manualFilterYmd,
       manualPoolEligibleGlobally,
@@ -1696,6 +1741,7 @@ export async function getBankOnlyInternalSumCandidates(
       applicable: canManualVincolo || manualPoolEligibleGlobally,
       targetAmount: bank.amount.toString(),
       targetCents,
+      bankDayYmd,
       sumDayYmd,
       manualPoolDayYmd: manualFilterYmd,
       manualPoolEligibleGlobally,
@@ -1768,6 +1814,7 @@ export async function getBankOnlyInternalSumCandidates(
     applicable: true,
     targetAmount: bank.amount.toString(),
     targetCents,
+    bankDayYmd,
     sumDayYmd,
     manualPoolDayYmd: manualFilterYmd,
     manualPoolEligibleGlobally,
@@ -1794,9 +1841,10 @@ export async function resolveBankOnlyInternalSum(
   reply: FastifyReply,
 ) {
   const { runId, suggestionId } = confirmParamsSchema.parse(request.params);
-  const { internalRecordIds: rawIds } = bankOnlyInternalSumBody.parse(
-    request.body,
-  );
+  const {
+    internalRecordIds: rawIds,
+    alignBankDueDateYmd,
+  } = bankOnlyInternalSumBody.parse(request.body);
   const internalRecordIds = [...new Set(rawIds)];
   if (internalRecordIds.length < 2) {
     throw new HttpError('Informe ao menos dois lançamentos internos no agrupamento.', 400);
@@ -1899,7 +1947,16 @@ export async function resolveBankOnlyInternalSum(
     );
   }
   const now = new Date();
+  const bankDayBefore = isoDateOrNull(bank.dueDate);
+  const willAlignBankDue =
+    alignBankDueDateYmd != null && alignBankDueDateYmd !== bankDayBefore;
   const updated = await prisma.$transaction(async (tx) => {
+    if (willAlignBankDue && alignBankDueDateYmd != null) {
+      await tx.bankRecord.update({
+        where: { id: bank.id },
+        data: { dueDate: dueDateFromYmdSaoPaulo(alignBankDueDateYmd) },
+      });
+    }
     if (toRemoveIds.length > 0) {
       await tx.matchSuggestion.deleteMany({ where: { id: { in: toRemoveIds } } });
     }
@@ -1908,6 +1965,9 @@ export async function resolveBankOnlyInternalSum(
         data: { suggestionId, internalRecordId: intId },
       });
     }
+    const dateNote = willAlignBankDue
+      ? ` Vencimento do extrato alinhado para ${alignBankDueDateYmd} (vínculo em datas diferentes).`
+      : '';
     return tx.matchSuggestion.update({
       where: { id: suggestionId },
       data: {
@@ -1922,7 +1982,7 @@ export async function resolveBankOnlyInternalSum(
         dateScore: 100,
         amountDifference: null,
         explanation:
-          'Vínculo agregado: total dos lançamentos internos = valor do banco (sem 1-1 com mesmo título).',
+          `Vínculo agregado: total dos lançamentos internos = valor do banco (sem 1-1 com mesmo título).${dateNote}`,
       },
     });
   });
@@ -1931,6 +1991,7 @@ export async function resolveBankOnlyInternalSum(
       id: updated.id,
       status: updated.status,
       confirmedAt: updated.confirmedAt?.toISOString() ?? null,
+      alignBankDueDateYmd: willAlignBankDue ? alignBankDueDateYmd : null,
     },
   });
 }

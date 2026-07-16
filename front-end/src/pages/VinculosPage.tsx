@@ -73,6 +73,12 @@ import {
 } from '@/lib/reconcile-storage';
 import { cn } from '@/lib/utils';
 
+/** Scroll vertical da tabela — sticky do cabeçalho só funciona dentro deste box. */
+const VINCULOS_TABLE_SCROLL_WRAP =
+  'max-h-[min(40rem,calc(100dvh-16rem))] overflow-y-auto overflow-x-auto';
+const VINCULOS_TABLE_HEADER_STICKY =
+  'bg-card sticky top-0 z-10 shadow-[0_1px_0_0_hsl(var(--border))] [&_th]:bg-card';
+
 function formatBrlAmount(raw: string | null): string {
   if (raw == null || raw === '') {
     return '—';
@@ -571,6 +577,10 @@ export function VinculosPage() {
   );
   const [calOpen, setCalOpen] = useState(false);
   const [calDate, setCalDate] = useState<Date | undefined>(() => {
+    const r = getStoredVinculosDateRange();
+    return ymdToLocalDate(r.from);
+  });
+  const [calMonth, setCalMonth] = useState<Date>(() => {
     const r = getStoredVinculosDateRange();
     return ymdToLocalDate(r.from);
   });
@@ -1143,7 +1153,9 @@ export function VinculosPage() {
                 onOpenChange={(o) => {
                   setCalOpen(o);
                   if (o) {
-                    setCalDate(ymdToLocalDate(compareRange.from));
+                    const d = ymdToLocalDate(compareRange.from);
+                    setCalDate(d);
+                    setCalMonth(d);
                   }
                 }}
               >
@@ -1178,12 +1190,15 @@ export function VinculosPage() {
                     mode='single'
                     numberOfMonths={1}
                     className='p-0'
+                    month={calMonth}
+                    onMonthChange={setCalMonth}
                     selected={calDate}
                     onSelect={(d) => {
                       if (!d) {
                         return;
                       }
                       setCalDate(d);
+                      setCalMonth(d);
                       const ymd = format(d, 'yyyy-MM-dd');
                       setCompareRange({ from: ymd, to: ymd });
                       setStatusFilter('pendente');
@@ -1255,10 +1270,10 @@ export function VinculosPage() {
           {showSuggestionsTableLoading ? (
             <VinculosTableLoading />
           ) : (
-            <div className='max-w-full overflow-x-auto'>
-              <Table>
-                <TableHeader>
-                  <TableRow className='hover:bg-transparent'>
+            <div className={cn('max-w-full', VINCULOS_TABLE_SCROLL_WRAP)}>
+              <Table className='border-separate border-spacing-0'>
+                <TableHeader className={VINCULOS_TABLE_HEADER_STICKY}>
+                  <TableRow className='bg-card hover:bg-transparent'>
                     <TableHead className='text-muted-foreground w-8 px-1 text-center text-xs'>
                       {displayRows.length > 0 ? (
                         <input
@@ -1299,7 +1314,7 @@ export function VinculosPage() {
                     </TableHead>
                     <TableHead className='min-w-40 text-xs'>
                       <SortableTh
-                        label='Interno (ERP)'
+                        label='Interno (EPROM)'
                         active={tableSort?.column === 'interno'}
                         direction={
                           tableSort?.column === 'interno'
@@ -1307,7 +1322,7 @@ export function VinculosPage() {
                             : null
                         }
                         onClick={cycleSortInterno}
-                        screenReaderHint='Ordenar alfabeticamente pelo nome no ERP. A a Z, Z a A ou ordem original da API.'
+                        screenReaderHint='Ordenar alfabeticamente pelo nome no EPROM. A a Z, Z a A ou ordem original da API.'
                       />
                     </TableHead>
                     <TableHead className='min-w-26 whitespace-nowrap text-xs'>

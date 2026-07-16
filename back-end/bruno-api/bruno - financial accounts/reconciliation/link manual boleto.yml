@@ -1,0 +1,32 @@
+info:
+  name: link manual boleto
+  type: http
+  seq: 20
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/suggestions/{{SUGGESTION_ID}}/link-manual-boleto"
+  body:
+    type: multipart/form-data
+    data:
+      - name: notes
+        type: text
+        value: "Conferência manual — observação de teste"
+      - name: targetDueDateYmd
+        type: text
+        value: "2026-07-15"
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+docs: |-
+  Vínculo manual (boleto) em sugestão OPEN só-banco ou só-ERP.
+  Campos multipart opcionais: evidence (arquivo), notes, targetDueDateYmd (YYYY-MM-DD).
+  Se targetDueDateYmd for informado, atualiza o dueDate do BankRecord ou InternalRecord
+  para esse dia (fuso America/Sao_Paulo) — o item passa a aparecer na triagem nessa data.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

@@ -8,17 +8,48 @@ import "react-day-picker/style.css"
 
 export type CalendarProps = DayPickerProps
 
+/** Extrai uma Date de `selected` (single / range / array) para posicionar o mês. */
+function monthFromSelected(selected: unknown): Date | undefined {
+  if (selected instanceof Date) {
+    return selected
+  }
+  if (Array.isArray(selected)) {
+    const first = selected.find((d): d is Date => d instanceof Date)
+    return first
+  }
+  if (
+    selected != null &&
+    typeof selected === "object" &&
+    "from" in selected &&
+    (selected as { from: unknown }).from instanceof Date
+  ) {
+    return (selected as { from: Date }).from
+  }
+  return undefined
+}
+
 function Calendar({
   className,
   classNames,
   showOutsideDays = true,
   ...props
 }: CalendarProps) {
+  const selected = "selected" in props ? props.selected : undefined
+  const month = "month" in props ? props.month : undefined
+  const defaultMonth =
+    "defaultMonth" in props && props.defaultMonth != null
+      ? props.defaultMonth
+      : month == null
+        ? monthFromSelected(selected)
+        : undefined
+
   return (
     <DayPicker
       locale={ptBR}
       showOutsideDays={showOutsideDays}
       className={cn("rdp pt-0", className)}
+      {...props}
+      defaultMonth={defaultMonth}
       classNames={{
         month_caption: "flex h-7 w-full items-center justify-center px-0",
         caption_label: "text-sm font-medium",
@@ -67,7 +98,6 @@ function Calendar({
           return <ChevronLeft className={cn("size-4", className)} aria-hidden {...rest} />
         },
       }}
-      {...props}
     />
   )
 }

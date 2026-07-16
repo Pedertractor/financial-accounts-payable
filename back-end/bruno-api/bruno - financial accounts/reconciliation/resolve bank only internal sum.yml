@@ -1,0 +1,30 @@
+info:
+  name: resolve bank only internal sum
+  type: http
+  seq: 22
+
+http:
+  method: POST
+  url: "{{HOST}}/reconciliation/runs/{{RUN_ID}}/suggestions/{{SUGGESTION_ID}}/resolve-bank-only-internal-sum"
+  body:
+    type: json
+    data: |-
+      {
+        "internalRecordIds": ["INTERNAL_ID_1", "INTERNAL_ID_2"],
+        "alignBankDueDateYmd": "2026-07-15"
+      }
+  auth:
+    type: bearer
+    token: "{{TOKEN}}"
+
+docs: |-
+  Vincula extrato (só banco) a 2+ internos pela soma do valor.
+  Body: internalRecordIds (obrigatório, ≥2).
+  alignBankDueDateYmd (opcional, YYYY-MM-DD): se o vencimento do extrato for outro dia,
+  atualiza BankRecord.dueDate para alinhar a triagem ao dia dos títulos ERP.
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
