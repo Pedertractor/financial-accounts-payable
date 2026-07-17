@@ -33,6 +33,10 @@ app.get('/test', async (_, reply) => {
   return reply.status(200).send();
 });
 
+app.get('/health', async (_, reply) => {
+  return reply.status(200).send({ status: 'ok' });
+});
+
 function getErrorCode(error: unknown): string | undefined {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;

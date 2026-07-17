@@ -8,11 +8,6 @@ services:
       - 3135:3030
     env_file:
       - .env
-    environment:
-      # Dentro da rede Docker o Postgres não é localhost
-      DATABASE_URL: postgresql://docker:docker@project-financial-accounts-payable-database:5432/financial-accounts-payable
-      HOST: 0.0.0.0
-      PORT: '3030'
     depends_on:
       - project-financial-accounts-payable-database
 
