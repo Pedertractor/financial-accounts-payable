@@ -50,6 +50,10 @@ export async function postApplicationsEvent(
     });
   }
 
+  if (result.kind === 'throttled') {
+    return reply.status(200).send({ ok: true, throttled: true });
+  }
+
   if (result.kind === 'failed') {
     throw new HttpError(
       `Falha ao enviar evento ao Orion (HTTP ${result.status}): ${result.body}`,
